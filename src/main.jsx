@@ -1,14 +1,26 @@
-import { StrictMode } from 'react'
+import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
 import Settings from './Settings.jsx'
 import Help from './Help.jsx'
+import SplashScreen from './SplashScreen.jsx'
 import { LanguageProvider } from './LanguageContext.jsx'
+
+// Ana uygulama — açılış ekranını sarmalamak için wrapper
+function MainWithSplash() {
+  const [showSplash, setShowSplash] = useState(true);
+  return (
+    <>
+      {showSplash && <SplashScreen onDone={() => setShowSplash(false)} />}
+      <App />
+    </>
+  );
+}
 
 const renderApp = () => {
   const root = createRoot(document.getElementById('root'));
-  
+
   // Basit Hash Router mantığı
   if (window.location.hash === '#/settings') {
     root.render(
@@ -27,9 +39,10 @@ const renderApp = () => {
       </StrictMode>
     );
   } else {
+    // Yalnızca ana pencerede açılış ekranı gösterilir
     root.render(
       <StrictMode>
-        <App />
+        <MainWithSplash />
       </StrictMode>
     );
   }

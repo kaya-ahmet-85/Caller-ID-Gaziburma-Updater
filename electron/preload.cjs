@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   maximize: () => ipcRenderer.send('window-maximize'),
   close: () => ipcRenderer.send('window-close'),
   openExternal: (url) => ipcRenderer.send('open-external', url),
+  openCustomerEdit: (data) => ipcRenderer.send('open-customer-edit', data),
   onUsbStatus: (callback) => {
     const listener = (event, status) => callback(status);
     ipcRenderer.on('usb-status', listener);

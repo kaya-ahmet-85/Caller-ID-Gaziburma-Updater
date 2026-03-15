@@ -578,6 +578,17 @@ function AppInner() {
     }
   };
 
+  // Web Arayüzünde Müşteri Düzenleme
+  // ID varsa: ?musteri_id=X  |  yoksa: ?telefon=Y
+  const WEB_BASE_URL = "https://gaziburma.com/api/index.php?anahtar=;_u9uhe!M5%3C:pMB^";
+
+  const handleEditCustomer = (customerId, phone) => {
+    if (window.electronAPI && window.electronAPI.openCustomerEdit) {
+      // Electron BrowserWindow açar; sayfa yüklendikten sonra Ajax filtresi tetiklenir.
+      window.electronAPI.openCustomerEdit({ customerId: customerId ?? null, phone: phone ?? null });
+    }
+  };
+
   const handleGlobalSyncClick = () => {
     if (!internetStatus) return; // İnternet yoksa tıklamayı yoksay
     setIsManualSyncing(true);
@@ -1063,7 +1074,11 @@ function AppInner() {
                                 <Printer size={18} />
                                 {t('print')}
                               </button>
-                              <button className="action-btn edit-btn" style={{ opacity: box4Selected ? 1 : 0.5 }}>
+                              <button 
+                                className="action-btn edit-btn" 
+                                style={{ opacity: box4Selected ? 1 : 0.5 }}
+                                onClick={() => box4Selected && handleEditCustomer(box4Selected.id ?? null, box4Selected.phone)}
+                              >
                                 <Edit size={18} />
                                 {t('edit')}
                               </button>
@@ -1171,7 +1186,10 @@ function AppInner() {
                           <Printer size={18} />
                           {t('print')}
                         </button>
-                        <button className="action-btn edit-btn">
+                        <button 
+                          className="action-btn edit-btn"
+                          onClick={() => handleEditCustomer(line.customerId ?? null, line.phone)}
+                        >
                           <Edit size={18} />
                           {t('edit')}
                         </button>

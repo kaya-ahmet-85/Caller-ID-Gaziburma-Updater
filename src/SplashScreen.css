@@ -1,0 +1,342 @@
+/* ================================================================
+   SPLASH SCREEN — SİNEMATİK AÇILIŞ ANİMASYONU
+   Zaman Çizelgesi:
+   0.00 - 0.10s : Arka plan ızgara belirir
+   0.10 - 0.90s : Sol & sağ çizgiler merkezde buluşur        (0.8s)
+   0.80 - 0.95s : Merkez nokta parlar + söner                (0.15s)
+   0.85 - 1.40s : Logo clip-path YATAY açılır                (0.55s)
+   1.40 - 2.20s : Logo clip-path DİKEY açılır (tam görünür)  (0.80s)
+   2.20 - 2.60s : Ayırıcı çizgi + spinner + lisans giriş      (0.4s)
+   4.80s        : fade-out başlar
+   ================================================================ */
+
+/* ---- CSS Değişkenleri ---- */
+:root {
+  --splash-blue:      #0078d4;
+  --splash-blue-glow: rgba(0, 120, 212, 0.5);
+  --splash-cyan:      #40c4ff;
+  --splash-bg:        #f4f7fb;
+  --splash-grid:      rgba(0, 120, 212, 0.045);
+}
+
+/* ---- Temel Overlay ---- */
+.splash-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: var(--splash-bg);
+  overflow: hidden;
+  opacity: 1;
+  transition: opacity 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.splash-overlay.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---- Arka Plan Izgara ---- */
+.splash-bg-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--splash-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--splash-grid) 1px, transparent 1px);
+  background-size: 48px 48px;
+  animation: gridAppear 0.8s ease both;
+  pointer-events: none;
+}
+
+@keyframes gridAppear {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ============================================================
+   AŞAMA 1: ÇIZGILER KENARLARDA MERKEZDE BULUŞUR
+   ============================================================ */
+
+/* Ortak çizgi stilleri */
+.splash-line-left,
+.splash-line-right {
+  position: absolute;
+  top: 50%;   /* Logo'nun tam merkezi */
+  height: 2px;
+  transform: translateY(-50%);
+  box-shadow:
+    0 0 2px  1px rgba(255, 255, 255, 0.9),   /* Parlak beyaz çekirdek */
+    0 0 6px  2px rgba(255,  80,  80, 1.0),   /* Kırmızı iç hale */
+    0 0 16px 4px rgba(220,  20,  20, 0.85),  /* Kırmızı orta hale */
+    0 0 32px 8px rgba(180,   0,   0, 0.5);   /* Dış koyulaşan hale */
+}
+
+/* Sol: left:0 → right:50vw, soldan sağa büyür */
+.splash-line-left {
+  left: 0;
+  width: 0;
+  transform-origin: left center;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(220, 20, 20, 0.5)  20%,
+    rgba(255, 80, 80, 0.9)  60%,
+    rgba(255,200,200, 1.0) 100%
+  );
+  animation: lineGrowLeft 0.75s cubic-bezier(0.65, 0, 0.35, 1) 0.1s both,
+             lineFadeLeft  0.25s ease               0.82s both;
+}
+
+@keyframes lineGrowLeft {
+  0%   { width: 0; }
+  100% { width: 50%; }
+}
+
+@keyframes lineFadeLeft {
+  to { opacity: 0; }
+}
+
+/* Sağ: right:0 → left:50vw, sağdan sola büyür */
+.splash-line-right {
+  right: 0;
+  width: 0;
+  transform-origin: right center;
+  background: linear-gradient(
+    to left,
+    transparent 0%,
+    rgba(220, 20, 20, 0.5)  20%,
+    rgba(255, 80, 80, 0.9)  60%,
+    rgba(255,200,200, 1.0) 100%
+  );
+  animation: lineGrowRight 0.75s cubic-bezier(0.65, 0, 0.35, 1) 0.1s both,
+             lineFadeRight  0.25s ease               0.82s both;
+}
+
+@keyframes lineGrowRight {
+  0%   { width: 0; }
+  100% { width: 50%; }
+}
+
+@keyframes lineFadeRight {
+  to { opacity: 0; }
+}
+
+/* ============================================================
+   ÇARPIŞMA NOKTASI — Merkez Nokta Çakması (Kırmızı Lazer)
+   ============================================================ */
+
+.splash-center-dot {
+  position: absolute;
+  top: 50%;   /* Çizgilerle aynı noktada çakar — logo merkezi */
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff 20%, #ff3030 55%, #a00 100%);
+  box-shadow:
+    0 0 6px  3px rgba(255, 60, 60, 1.0),
+    0 0 20px 6px rgba(200,  0,  0, 0.8),
+    0 0 40px 12px rgba(180,  0,  0, 0.4);
+  transform: translate(-50%, -50%) scale(0);
+  animation: dotFlash 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) 0.78s both;
+  pointer-events: none;
+  z-index: 10;
+}
+
+@keyframes dotFlash {
+  0%   { transform: translate(-50%, -50%) scale(0);   opacity: 1; }
+  40%  { transform: translate(-50%, -50%) scale(2.0); opacity: 1; }
+  70%  { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(0);   opacity: 0; }
+}
+
+/* ============================================================
+   AŞAMA 2 & 3: LOGO KLİP-PATH YATAY → DİKEY AÇILIM
+   TEK animasyon — iki ayrı animasyon aynı property'i
+   hedeflediğinde fill-mode:both çakışması kaçınıldı.
+   ============================================================ */
+
+.splash-logo-wrap {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);   /* Logo merkezi tam 50vh'da = clip-path başlangıcı */
+
+  /* TEK animasyon: point → yatay çizgi (duraklama) → tam logo */
+  animation: logoReveal 2.0s linear 0.85s both;
+}
+
+@keyframes logoReveal {
+  /* 0.85s → başlangıç: merkez nokta (tamamen gizli) */
+  0%   { clip-path: inset(50% 50% 50% 50%); animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1); }
+  /* 0.85 + 0.54s = 1.39s → yatay çizgi oluştu */
+  27%  { clip-path: inset(49.5% 0% 49.5% 0%); animation-timing-function: steps(1, end); }
+  /* 0.85 + 0.72s = 1.57s → yatay çizgide kısa duraklama (vurgu) */
+  36%  { clip-path: inset(49.5% 0% 49.5% 0%); animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1); }
+  /* 0.85 + 2.0s = 2.85s → tam görünür */
+  100% { clip-path: inset(0% 0% 0% 0%); }
+}
+
+
+.splash-logo {
+  display: block;
+  width: clamp(260px, 36vw, 520px);
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 24px rgba(0, 120, 212, 0.12));
+  user-select: none;
+}
+
+/* ============================================================
+   AŞAMA 4: ALT ELEMANLARIN GİRİŞİ
+   ============================================================ */
+
+.splash-bottom {
+  position: absolute;
+  bottom: 15%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  animation: bottomSlideIn 0.6s cubic-bezier(0.22, 1, 0.36, 1) 2.15s both;
+  /* white-space: nowrap — kaldırıldı; lisans metni taşmamasın */
+  width: clamp(260px, 36vw, 520px);   /* Logo ile aynı genişlik */
+}
+
+@keyframes bottomSlideIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(14px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* Ayırıcı Çizgi */
+.splash-divider {
+  width: clamp(180px, 24vw, 380px);
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--splash-blue) 30%,
+    var(--splash-cyan) 50%,
+    var(--splash-blue) 70%,
+    transparent
+  );
+  margin-bottom: 4px;
+}
+
+/* Spinner Alanı */
+.splash-spinner-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* iOS 12 Çubuklu Spinner — Mavi */
+.splash-spinner {
+  position: relative;
+  width: 36px;
+  height: 36px;
+}
+
+.splash-spinner .spoke {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2.5px;
+  height: 9px;
+  border-radius: 99px;
+  background: var(--splash-blue);
+  transform-origin: center -6.5px;
+  opacity: 0;
+  animation: iosFade 1.2s linear infinite;
+}
+
+.splash-spinner .spoke:nth-child(1)  { transform: rotate(  0deg); animation-delay: -1.10s; }
+.splash-spinner .spoke:nth-child(2)  { transform: rotate( 30deg); animation-delay: -1.00s; }
+.splash-spinner .spoke:nth-child(3)  { transform: rotate( 60deg); animation-delay: -0.90s; }
+.splash-spinner .spoke:nth-child(4)  { transform: rotate( 90deg); animation-delay: -0.80s; }
+.splash-spinner .spoke:nth-child(5)  { transform: rotate(120deg); animation-delay: -0.70s; }
+.splash-spinner .spoke:nth-child(6)  { transform: rotate(150deg); animation-delay: -0.60s; }
+.splash-spinner .spoke:nth-child(7)  { transform: rotate(180deg); animation-delay: -0.50s; }
+.splash-spinner .spoke:nth-child(8)  { transform: rotate(210deg); animation-delay: -0.40s; }
+.splash-spinner .spoke:nth-child(9)  { transform: rotate(240deg); animation-delay: -0.30s; }
+.splash-spinner .spoke:nth-child(10) { transform: rotate(270deg); animation-delay: -0.20s; }
+.splash-spinner .spoke:nth-child(11) { transform: rotate(300deg); animation-delay: -0.10s; }
+.splash-spinner .spoke:nth-child(12) { transform: rotate(330deg); animation-delay:  0.00s; }
+
+@keyframes iosFade {
+  0%    { opacity: 1;    }
+  8.33% { opacity: 0.85; }
+  100%  { opacity: 0.07; }
+}
+
+/* Yükleniyor Yazısı */
+.splash-loading-text {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--splash-blue);
+  opacity: 0.6;
+}
+
+/* Lisans Metni */
+.splash-license {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 10px;
+  color: #96a8bf;
+  text-align: center;
+  letter-spacing: 0.01em;
+  line-height: 1.65;
+  width: 100%;          /* Üst elemana (splash-bottom) göre tam genişlik */
+  max-width: 100%;
+  margin: 4px 0 0;
+  word-break: keep-all; /* Sözcük ortasında kırılmasın */
+}
+
+/* ============================================================
+   KÖŞE DEKORASYONLARı
+   ============================================================ */
+
+.splash-corner-info {
+  position: absolute;
+  bottom: 16px;
+  right: 20px;
+  font-family: 'Segoe UI', monospace, sans-serif;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  color: #b2c0d0;
+  text-transform: uppercase;
+  animation: bottomSlideIn 0.6s 2.4s ease both;
+}
+
+.splash-pulse-dot {
+  position: absolute;
+  bottom: 18px;
+  left: 22px;
+  animation: bottomSlideIn 0.6s 2.4s ease both;
+}
+
+.splash-pulse-dot-inner {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--splash-blue);
+  position: relative;
+}
+
+.splash-pulse-dot-inner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(0, 120, 212, 0.3);
+  animation: pulseRing 1.8s ease-out infinite 2.4s;
+}
+
+@keyframes pulseRing {
+  0%   { transform: scale(1);   opacity: 0.7; }
+  100% { transform: scale(4.5); opacity: 0; }
+}

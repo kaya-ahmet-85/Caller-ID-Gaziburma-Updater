@@ -172,8 +172,10 @@ class CallerIdParser extends EventEmitter {
     if (customer) {
       this.debug(`[Lookup] BULUNDU: ${customer.musteri_bilgisi}`);
       return {
+        id: customer.id || customer.musteri_id || null,
         name: customer.musteri_bilgisi,
-        address: customer.acik_adres
+        address: customer.acik_adres,
+        phone: customer.telefon_numarasi
       };
     }
 
@@ -295,7 +297,7 @@ class CallerIdParser extends EventEmitter {
 
       if (isMatch) {
         results.push({
-          id: i, // Benzersiz bir ID olarak index kullanımı
+          id: customer.id || customer.musteri_id || null,
           name: customer.musteri_bilgisi,
           phone: customer.telefon_numarasi,
           address: customer.acik_adres

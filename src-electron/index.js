@@ -236,7 +236,7 @@ app.whenReady().then(() => {
   ipcMain.handle('manual-refresh', async (event, { lineLabel, phone }) => {
     return await callerIdParser.manualRefresh(lineLabel, phone);
   });
-  
+
   ipcMain.handle('lookup-customer', (event, phone) => {
     return callerIdParser.lookupCustomer(phone);
   });
@@ -247,6 +247,72 @@ app.whenReady().then(() => {
 
   ipcMain.handle('advanced-search', (event, query) => {
     return callerIdParser.searchDatabase(query);
+  });
+
+  // ====== MODAL PENCERE GÖRSEL UYARI (KIRMIZI GÖLGE) ======
+  // ====== MÜŞTERİ DÜZENLEME PENCERESİ (Electron BrowserWindow) ======
+  // Sistem tarayıcısı yerine Electron penceresi kullanılır; böylece sayfa
+  // yüklendikten sonra executeJavaScript() ile Ajax filtresi tetiklenebilir.
+  ipcMain.on('open-customer-edit', (event, { customerId, phone }) => {
+    const BASE_URL = "https://gaziburma.com/api/index.php?anahtar=;_u9uhe!M5%3C:pMB^";
+
+    const editWin = new BrowserWindow({
+      width: 1280,
+      height: 860,
+      minWidth: 900,
+      minHeight: 600,
+      title: 'Gaziburma Web Arayüzü',
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true
+      }
+    });
+
+    editWin.setMenu(null);
+    editWin.maximize();          // Tam ekran (Maximize) olarak aç
+    editWin.loadURL(BASE_URL);
+
+    // Sayfa tamamen yüklenince filtre JS'ini enjekte et
+    // 600ms gecikme: DataTables init + Ajax tablo verisi yüklenmesi için bekliyoruz
+    editWin.webContents.on('did-finish-load', () => {
+      // Telefon numarasını her zaman kullan (ID güvenilir değil)
+      // Virgüllü çoklu numaralarda sadece ilkini al: "0533...,0212..." → "0533..."
+      const rawPhone = phone && phone !== 'Veri Bekleniyor' && phone !== 'Bilinmiyor'
+        ? String(phone).split(/[,;\s]+/)[0].trim()
+        : null;
+
+      if (!rawPhone) return;
+
+      setTimeout(() => {
+        const jsCode = `
+          (function() {
+            var phoneInput = document.querySelector("input.col-search-input[placeholder='Müşteri Telefon Numarası']");
+
+            if (!phoneInput) {
+              console.warn('[CallerID] Telefon arama kutusu bulunamadı!');
+              return;
+            }
+
+            phoneInput.value = ${JSON.stringify(rawPhone)};
+
+            phoneInput.dispatchEvent(new Event('input',  { bubbles: true }));
+            phoneInput.dispatchEvent(new Event('change', { bubbles: true }));
+            phoneInput.dispatchEvent(new KeyboardEvent('keyup', {
+              bubbles: true, cancelable: true,
+              key: 'Enter', code: 'Enter', keyCode: 13, which: 13
+            }));
+
+            console.log('[CallerID] Telefon filtresi tetiklendi:', ${JSON.stringify(rawPhone)});
+          })();
+        `;
+
+        editWin.webContents.executeJavaScript(jsCode).catch(err => {
+          console.error('[EditCustomer] JS enjeksiyon hatası:', err.message);
+        });
+      }, 600);
+    });
+
+    editWin.on('closed', () => { /* temizlik gerekmez */ });
   });
 
   // ====== MODAL PENCERE GÖRSEL UYARI (KIRMIZI GÖLGE) ======
@@ -588,7 +654,7 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
       { timeout: 15000 },
       () => {
-        try { fs.unlinkSync(psPath); } catch (e) {}
+        try { fs.unlinkSync(psPath); } catch (e) { }
       }
     );
   };
@@ -608,7 +674,7 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
 
       const now = new Date();
       const tarih = now.toLocaleDateString('tr-TR');
-      const saat  = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+      const saat = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
 
       // ================================================================
       // ŞABLON LAYOUT (sağ kenarlık 9mm sağa kaydırıldı → 70.5mm toplam)
@@ -617,7 +683,7 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
       // 1(|) + 17 + 1(|) + 27 + 1(|) = 47
       // ================================================================
 
-      const W   = 48;   // toplam satır genişliği
+      const W = 48;   // toplam satır genişliği
       const LBL = 17;   // etiket sütunu
       const VAL = 28;   // değer sütunu  (1+17+1+28+1 = 48)
       // Teslimat/Tutar: CAL=LBL ve CAR=VAL → orta | aynı pozisyonda
@@ -640,7 +706,7 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
       const textToBytes = (str) => Array.from(Buffer.from((str || '').toString(), 'binary'));
 
       // Yatay çizgi: |-------...---------| (köşe ve kesişim = |, referansa uygun)
-      const hLine     = () => '|' + '-'.repeat(LBL) + '|' + '-'.repeat(VAL) + '|';
+      const hLine = () => '|' + '-'.repeat(LBL) + '|' + '-'.repeat(VAL) + '|';
       // Teslimat/Tutar ayracı
       const hLineCols = () => '|' + '-'.repeat(CAL) + '|' + '-'.repeat(CAR) + '|';
 
@@ -674,8 +740,8 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
       // ================================================================
       const buildReceipt = () => {
         const ESC = 0x1B;
-        const GS  = 0x1D;
-        const LF  = 0x0A;
+        const GS = 0x1D;
+        const LF = 0x0A;
         const bytes = [];
         const push = (...args) => args.forEach(b => bytes.push(b));
         const line = (str) => { bytes.push(...textToBytes(str)); bytes.push(LF); };
@@ -787,7 +853,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
           ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
           { timeout: 30000 },
           (err) => {
-            try { fs.unlinkSync(psPath); } catch(e) {}
+            try { fs.unlinkSync(psPath); } catch (e) { }
             if (err) {
               console.error('[Print] RAW yazdırma hatası:', err);
               resolve({ success: false, error: err.message });
@@ -813,12 +879,12 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
       console.log('[TestPrint] ESC/POS RAW sınama sayfası:', printerName);
 
       const tarih = new Date().toLocaleDateString('tr-TR');
-      const saat  = new Date().toLocaleTimeString('tr-TR');
+      const saat = new Date().toLocaleTimeString('tr-TR');
       const LINE_WIDTH = 42;
 
       const ESC = 0x1B;
-      const GS  = 0x1D;
-      const LF  = 0x0A;
+      const GS = 0x1D;
+      const LF = 0x0A;
       const sepLine = Array(LINE_WIDTH).fill(0x2D);
       const textToBytes = (str) => Array.from(Buffer.from((str || '').toString(), 'binary'));
 
@@ -900,7 +966,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
           ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
           { timeout: 30000 },
           (err) => {
-            try { fs.unlinkSync(psPath); } catch(e) {}
+            try { fs.unlinkSync(psPath); } catch (e) { }
             if (err) {
               console.error('[TestPrint] RAW hatası:', err);
               resolve({ success: false, error: err.message });
