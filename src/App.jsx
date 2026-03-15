@@ -565,10 +565,10 @@ function AppInner() {
   };
 
   // Yazdırma Fonksiyonu
-  const handlePrint = async (name, phone, address) => {
+  const handlePrint = async (name, phone, address, callerPhone) => {
     if (!window.electronAPI || !window.electronAPI.printCustomerInfo) return;
     try {
-      const result = await window.electronAPI.printCustomerInfo({ name, phone, address });
+      const result = await window.electronAPI.printCustomerInfo({ name, phone, address, callerPhone });
       if (!result.success) {
         console.error('[UI] Yazdırma hatası:', result.error);
         alert(result.error || 'Yazdırma işlemi başarısız oldu.');
@@ -878,7 +878,7 @@ function AppInner() {
             <div className="status-item">
               <div className="status-info">
                 <div className="status-label">
-                  <span>{lang === 'en' ? 'Database Update' : 'Database Güncellemesi'}</span>
+                  <span>{lang === 'en' ? 'Database Update' : 'Veri Taban\u0131 G\u00FCncellemesi'}</span>
                 </div>
                 <div className={`status-value ${internetStatus ? 'connected' : 'disconnected'}`}>
                   <div className="status-dot"></div>
@@ -1058,8 +1058,7 @@ function AppInner() {
                                 <div className="detail-content">
                                   <span className="detail-label">{t('addressInfo')}</span>
                                   <span className="detail-value" style={{ 
-                                    opacity: box4Selected ? 1 : 0.4, 
-                                    lineHeight: '1.4' 
+                                    opacity: box4Selected ? 1 : 0.4
                                   }}>{box4Selected ? box4Selected.address : ''}</span>
                                 </div>
                               </div>
@@ -1069,7 +1068,7 @@ function AppInner() {
                               <button 
                                 className="action-btn print-btn" 
                                 style={{ opacity: box4Selected ? 1 : 0.5 }}
-                                onClick={() => box4Selected && handlePrint(box4Selected.name, box4Selected.phone, box4Selected.address)}
+                                onClick={() => box4Selected && handlePrint(box4Selected.name, box4Selected.phone, box4Selected.address, 'Veri Tabani')}
                               >
                                 <Printer size={18} />
                                 {t('print')}
@@ -1171,8 +1170,7 @@ function AppInner() {
                           <div className="detail-content">
                             <span className="detail-label">{t('addressInfo')}</span>
                             <span className="detail-value" style={{ 
-                              opacity: line.address === 'Veri Bekleniyor' ? 0.4 : 1, 
-                              lineHeight: '1.4' 
+                              opacity: line.address === 'Veri Bekleniyor' ? 0.4 : 1
                             }}>{line.address === 'Veri Bekleniyor' ? t('waitingData') : line.address}</span>
                           </div>
                         </div>
@@ -1181,7 +1179,7 @@ function AppInner() {
                       <div className="line-actions">
                         <button 
                           className="action-btn print-btn"
-                          onClick={() => handlePrint(line.name, line.phone, line.address)}
+                          onClick={() => handlePrint(line.name, line.phone, line.address, hatNumbers[line.id] || '')}
                         >
                           <Printer size={18} />
                           {t('print')}

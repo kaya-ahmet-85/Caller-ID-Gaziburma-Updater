@@ -513,9 +513,40 @@
 }
 
 .detail-row.address-row {
-  height: 140px; /* Further increased from 100px */
   align-items: flex-start;
   padding-top: 14px;
+}
+
+/* Adres içeriği: yazı uzarsa scrollbar çıkar, kutu büyümez */
+.detail-row.address-row .detail-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.detail-row.address-row .detail-value {
+  display: block;
+  max-height: 90px;        /* ~3,5 satır */
+  overflow-y: auto;
+  line-height: 1.45;
+  word-break: break-word;
+  padding-right: 4px;      /* Scrollbar için boşluk */
+}
+
+/* İnce, tema uyumlu scrollbar */
+.detail-row.address-row .detail-value::-webkit-scrollbar {
+  width: 4px;
+}
+.detail-row.address-row .detail-value::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.05);
+  border-radius: 4px;
+}
+.detail-row.address-row .detail-value::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.3);
+  border-radius: 4px;
+}
+.detail-row.address-row .detail-value::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.55);
 }
 
 .icon-wrapper {

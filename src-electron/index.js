@@ -660,7 +660,7 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
   };
 
   // ====== YAZDIRMA (ESC/POS RAW PROTOCOL) ======
-  ipcMain.handle('print-customer-info', async (event, { name, phone, address }) => {
+  ipcMain.handle('print-customer-info', async (event, { name, phone, address, callerPhone }) => {
     try {
       let selectedPrinter = null;
       if (fs.existsSync(printerConfigPath)) {
@@ -687,8 +687,8 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
       const LBL = 17;   // etiket sütunu
       const VAL = 28;   // değer sütunu  (1+17+1+28+1 = 48)
       // Teslimat/Tutar: CAL=LBL ve CAR=VAL → orta | aynı pozisyonda
-      const CAL = 17;   // Teslimat sol sütun (= LBL, çizgiler hizalı)
-      const CAR = 28;   // Tutar sağ sütun  (= VAL)
+      const CAL = 31;   // Teslimat sol sütun (17mm sağa kaydırıldı: 17→31)
+      const CAR = 14;   // Tutar sağ sütun  (17mm daraltıldı: 28→14)
 
       const pad = (str, len) => {
         const s = (str || '').toString().substring(0, len);
@@ -703,9 +703,33 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
         const s = (str || '').toString().substring(0, len);
         return ' '.repeat(Math.max(0, len - s.length)) + s;
       };
-      const textToBytes = (str) => Array.from(Buffer.from((str || '').toString(), 'binary'));
-
-      // Yatay çizgi: |-------...---------| (köşe ve kesişim = |, referansa uygun)
+      // Turkce karakterler ASCII karsiliklarina donusturulur (yazici uyumlulugu)
+      const normalizeTR = (str) => (str || '').toString()
+        .replace(/\u015f/g, 's').replace(/\u015e/g, 'S')
+        .replace(/\u011f/g, 'g').replace(/\u011e/g, 'G')
+        .replace(/\u0131/g, 'i').replace(/\u0130/g, 'I')
+        .replace(/\u00e7/g, 'c').replace(/\u00c7/g, 'C')
+        .replace(/\u00f6/g, 'o').replace(/\u00d6/g, 'O')
+        .replace(/\u00fc/g, 'u').replace(/\u00dc/g, 'U')
+        .replace(/\u00e2/g, 'a').replace(/\u00ea/g, 'e')
+        .replace(/\u00ee/g, 'i').replace(/\u00f4/g, 'o')
+        .replace(/\u00fb/g, 'u').replace(/\u00e0/g, 'a');
+      const textToBytes = (str) => {
+        const s = normalizeTR(str);
+        const result = [];
+        for (let i = 0; i < s.length; i++) result.push(s.charCodeAt(i) & 0x7F);
+        return result;
+      };
+      // Telefon numarasini (5XX) XXX XX XX veya (2XX) XXX XX XX formatina donusturur
+      const fmtPhone = (raw) => {
+        const digits = normalizeTR((raw || '').toString()).replace(/\D/g, '');
+        let d = digits;
+        if (d.length === 11 && d[0] === '0') d = d.slice(1); // bas?ndaki 0'? kaldir
+        if (d.length === 10) {
+          return '(' + d.slice(0, 3) + ') ' + d.slice(3, 6) + ' ' + d.slice(6, 8) + ' ' + d.slice(8);
+        }
+        return normalizeTR(raw || ''); // formatlanamiyorsa oldugu gibi
+      };
       const hLine = () => '|' + '-'.repeat(LBL) + '|' + '-'.repeat(VAL) + '|';
       // Teslimat/Tutar ayracı
       const hLineCols = () => '|' + '-'.repeat(CAL) + '|' + '-'.repeat(CAR) + '|';
@@ -746,48 +770,142 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
         const push = (...args) => args.forEach(b => bytes.push(b));
         const line = (str) => { bytes.push(...textToBytes(str)); bytes.push(LF); };
 
-        push(ESC, 0x40); // Init
+        push(ESC, 0x40);         // Printer init
+        push(ESC, 0x74, 0x12);   // PC857 Türkçe kod sayfası—ş,ğ,ı,İ vs. doğru basar
 
-        // === BAŞLIK: "gaziburma" - ortalı, kalın ===
-        push(ESC, 0x61, 0x01); // orta hizala
-        push(ESC, 0x45, 0x01); // bold
-        line('gaziburma');
-        push(ESC, 0x45, 0x00); // bold off
-        push(ESC, 0x61, 0x00); // sol hizala
+        // Sadece değer kısmını bold yapan yardımcı:
+        // |label           |(BOLD)değer                    |(/BOLD) LF
+        const boldValueRow = (label, value) => {
+          const maxV = VAL - 1;
+          const valStr = (value || '').toString();
+          const chunks = valStr.length === 0 ? [''] :
+            Array.from({ length: Math.ceil(valStr.length / maxV) },
+              (_, i) => valStr.substring(i * maxV, (i + 1) * maxV));
+
+          chunks.forEach((chunk, idx) => {
+            const lbl = idx === 0 ? pad(label, LBL) : pad('', LBL);
+            bytes.push(...textToBytes('|' + lbl + '|'));
+            push(ESC, 0x45, 0x01);
+            bytes.push(...textToBytes(' ' + pad(chunk, maxV) + '|'));
+            push(ESC, 0x45, 0x00);
+            push(LF);
+          });
+        };
+
+        // minLines: en az bu kadar satir basilir (bos satir ile doldurulur)
+        // maxLines: fazlasi kesilir
+        const paddedBoldValueRow = (label, value, minLines, maxLines) => {
+          const maxV = VAL - 1;
+          const valStr = (value || '').toString();
+          let chunks = [];
+          if (valStr.length === 0) {
+            chunks = [''];
+          } else {
+            for (let i = 0; i < valStr.length; i += maxV)
+              chunks.push(valStr.substring(i, i + maxV));
+          }
+          // Max satir kap
+          chunks = chunks.slice(0, maxLines);
+          // Min satire tamamla (bos satir ile)
+          while (chunks.length < minLines) chunks.push('');
+
+          chunks.forEach((chunk, idx) => {
+            const lbl = idx === 0 ? pad(label, LBL) : pad('', LBL);
+            bytes.push(...textToBytes('|' + lbl + '|'));
+            push(ESC, 0x45, 0x01);
+            bytes.push(...textToBytes(' ' + pad(chunk, maxV) + '|'));
+            push(ESC, 0x45, 0x00);
+            push(LF);
+          });
+        };
+
+        // === BASLIK: Gaziburma Logosu — ESC * (ESC a 1 ile ortalanir) ===
+        try {
+          const { nativeImage } = require('electron');
+          const logoPath = require('path').join(__dirname, '..', 'Gaziburma Logo (1458x625).png');
+          // 300 sutun ~ 42mm @ 180dpi; 58mm kagit ortasinda gözükür
+          const COLS = 300;
+          const logoH = Math.round(COLS * 625 / 1458); // ~128 piksel
+          const img = nativeImage.createFromPath(logoPath)
+            .resize({ width: COLS, height: logoH, quality: 'better' });
+          const size = img.getSize();
+          const rgba = img.getBitmap();
+
+          // ESC a 1: orta hizala
+          push(ESC, 0x61, 0x01);
+          // ESC 3 24: satir araligini tam 24 noktaya ayarla (serit yuksekligi)
+          // Bu olmadan LF varsayilan aralikla kağidi ilerletir => seritler arasinda bosluk!
+          push(ESC, 0x33, 24);
+
+          // ESC * mode 33 = 24-nokta cift yogunluk; 3 byte/sutun
+          const STRIP = 24;
+          for (let startRow = 0; startRow < size.height; startRow += STRIP) {
+            push(ESC, 0x2A, 33, COLS & 0xFF, (COLS >> 8) & 0xFF);
+            for (let col = 0; col < COLS; col++) {
+              let b0 = 0, b1 = 0, b2 = 0;
+              for (let dot = 0; dot < STRIP; dot++) {
+                const row = startRow + dot;
+                if (row < size.height) {
+                  const idx = (row * size.width + col) * 4;
+                  const r = rgba[idx], g = rgba[idx + 1], bv = rgba[idx + 2], a = rgba[idx + 3];
+                  const gray = a < 128 ? 255 : Math.round(0.299 * r + 0.587 * g + 0.114 * bv);
+                  if (gray < 128) {
+                    if (dot < 8) b0 |= (0x80 >> dot);
+                    else if (dot < 16) b1 |= (0x80 >> (dot - 8));
+                    else b2 |= (0x80 >> (dot - 16));
+                  }
+                }
+              }
+              push(b0, b1, b2);
+            }
+            push(LF);
+          }
+
+          push(ESC, 0x32);        // Varsayilan satir araligina geri don (ESC 2)
+          push(ESC, 0x61, 0x00);  // Sol hiza
+          push(ESC, 0x4A, 12);    // ~1.5mm bosluk (logo ile sablon arasi)
+        } catch (e) {
+          push(ESC, 0x61, 0x01);
+          push(ESC, 0x45, 0x01);
+          line('gaziburma');
+          push(ESC, 0x45, 0x00);
+          push(ESC, 0x61, 0x00);
+        }
 
         // === HEADER TEK HÜCRE (2 satır) — ortada | yok ===
         // Üst yatay çizgi — köşeler | ile temiz
         line('|' + '-'.repeat(W - 2) + '|');
         // İç genişlik = W-2 = 46 char. Sol bölge = LBL(17), Sağ bölge = W-2-LBL(29)
         const hdrR = W - 2 - LBL; // 29 char — sağ yazı bölgesi (iç | yok)
-        // Satır 1: Gaziburma ortalı (Mustafa ile aynı eksen) | Telefon sağa yaslı — TEK HÜCRE
-        line('|' + center('Gaziburma', LBL) + rjust('(216) 354 27 27', hdrR) + '|');
+        // Satir 1: Gaziburma ortali | Hat numarasi sag yali
+        const headerPhoneStr = fmtPhone(callerPhone || '').substring(0, hdrR).trim();
+        line('|' + center('Gaziburma', LBL) + rjust(headerPhoneStr, hdrR) + '|');
         // Satır 2: Mustafa sol bölge ortası | Pendik 4mm (~3 char) sağa kaydırılmış — TEK HÜCRE
         line('|' + center('Mustafa', LBL) + pad('   Pendik', hdrR) + '|');
         line(hLine());
 
-        // === SİPARİŞ TARİHİ ===
-        dataRow('Siparis Tarihi:', `${tarih} ${saat}`).forEach(r => line(r));
+        // === SİPARİŞ TARİHİ — değer bold ===
+        boldValueRow('Siparis Tarihi:', `${tarih} ${saat}`);
         line(hLine());
 
         // === TESLİMAT TARİHİ ===
         dataRow('Teslimat Tarihi:', '').forEach(r => line(r));
         line(hLine());
 
-        // === TEL ===
-        dataRow('Tel:', phone || '').forEach(r => line(r));
+        // === TEL -- deger bold, formatli ===
+        boldValueRow('Tel:', fmtPhone(phone || ''));
         line(hLine());
 
         // === SİPARİŞ VEREN ===
         dataRow('Siparis Veren:', '').forEach(r => line(r));
         line(hLine());
 
-        // === ALICI ===
-        dataRow('Alici:', name || '').forEach(r => line(r));
+        // === ALICI: min 1 satir, max 4 satir ===
+        paddedBoldValueRow('Alici:', name || '', 1, 4);
         line(hLine());
 
-        // === ADRES ===
-        dataRow('Adres:', address || '').forEach(r => line(r));
+        // === ADRES: min 2 satir, max 10 satir ===
+        paddedBoldValueRow('Adres:', address || '', 2, 10);
         line(hLine());
 
         // === TESLİMAT | TUTAR BAŞLIK ===
@@ -796,9 +914,8 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
         push(ESC, 0x45, 0x00);
         line(hLineCols());
 
-        // === BOŞ SİPARİŞ ALANI ===
-        // Temiz dikey | hizalaması için ESC J KULLANILMIYOR — sadece tam satırlar
-        for (let i = 0; i < 17; i++) {
+        // === BOS SIPARIS ALANI (20 satir) ===
+        for (let i = 0; i < 20; i++) {
           line('|' + ' '.repeat(CAL) + '|' + ' '.repeat(CAR) + '|');
         }
 
@@ -886,13 +1003,32 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
       const GS = 0x1D;
       const LF = 0x0A;
       const sepLine = Array(LINE_WIDTH).fill(0x2D);
-      const textToBytes = (str) => Array.from(Buffer.from((str || '').toString(), 'binary'));
+      // PC857 Türkçe kod sayfası — ESC t 0x12 ile eşleşir
+      // Eski 'binary' encode: ş→'_', ğ→boş karakter hatalarını düzeltir
+      // Turkce karakterler ASCII karsiliklarina donusturulur (yazici uyumlulugu)
+      const normalizeTR = (str) => (str || '').toString()
+        .replace(/\u015f/g, 's').replace(/\u015e/g, 'S')
+        .replace(/\u011f/g, 'g').replace(/\u011e/g, 'G')
+        .replace(/\u0131/g, 'i').replace(/\u0130/g, 'I')
+        .replace(/\u00e7/g, 'c').replace(/\u00c7/g, 'C')
+        .replace(/\u00f6/g, 'o').replace(/\u00d6/g, 'O')
+        .replace(/\u00fc/g, 'u').replace(/\u00dc/g, 'U')
+        .replace(/\u00e2/g, 'a').replace(/\u00ea/g, 'e')
+        .replace(/\u00ee/g, 'i').replace(/\u00f4/g, 'o')
+        .replace(/\u00fb/g, 'u').replace(/\u00e0/g, 'a');
+      const textToBytes = (str) => {
+        const s = normalizeTR(str);
+        const result = [];
+        for (let i = 0; i < s.length; i++) result.push(s.charCodeAt(i) & 0x7F);
+        return result;
+      };
 
       const bytes = [];
       const push = (...args) => args.forEach(b => bytes.push(b));
       const pushArr = (arr) => arr.forEach(b => bytes.push(b));
 
       push(ESC, 0x40); // Init
+      push(ESC, 0x74, 0x12); // PC857 Türkçe kod sayfası
 
       // Başlık (Ortalı, Büyük, Kalın)
       push(ESC, 0x61, 0x01); // orta
