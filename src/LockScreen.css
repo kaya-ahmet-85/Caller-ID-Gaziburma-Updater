@@ -1,0 +1,213 @@
+/* ====== KİLİT EKRANI — LOCK SCREEN ====== */
+
+.lock-overlay {
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(135deg, #0a1628 0%, #0f2040 40%, #162a4a 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 99999;
+  animation: lockFadeIn 0.4s ease;
+}
+
+@keyframes lockFadeIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.lock-card {
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  padding: 44px 48px;
+  width: 420px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  color: #f1f5f9;
+}
+
+/* Başlık */
+.lock-header {
+  text-align: center;
+  margin-bottom: 36px;
+}
+
+.lock-logo-circle {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(56, 189, 248, 0.35);
+}
+
+.lock-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: #f1f5f9;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.lock-subtitle {
+  font-size: 13px;
+  color: #64748b;
+}
+
+/* Form */
+.lock-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.lock-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lock-field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.3px;
+}
+
+.lock-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.lock-input-wrap input {
+  width: 100%;
+  padding: 13px 44px 13px 16px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  color: #f1f5f9;
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.lock-input-wrap input::placeholder {
+  color: #475569;
+}
+
+.lock-input-wrap input:focus {
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.06);
+}
+
+.eye-btn {
+  position: absolute;
+  right: 12px;
+  background: transparent;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  transition: color 0.2s;
+}
+.eye-btn:hover { color: #94a3b8; }
+
+/* Ana Buton */
+.lock-btn {
+  padding: 13px;
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+  color: #0f172a;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+  box-shadow: 0 4px 16px rgba(56, 189, 248, 0.3);
+}
+
+.lock-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(56, 189, 248, 0.45);
+}
+
+.lock-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Parolamı Unuttum */
+.lock-forgot {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: color 0.2s;
+  padding: 4px;
+}
+.lock-forgot:hover { color: #94a3b8; }
+
+/* Hata mesajı */
+.lock-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #f87171;
+  font-size: 13px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+/* Gizli soru metni */
+.lock-question-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  margin-bottom: -8px;
+}
+.lock-question-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+/* Başarı ekranı */
+.lock-success-screen {
+  text-align: center;
+  align-items: center;
+}
+.lock-success-icon {
+  color: #34d399;
+  margin-bottom: 8px;
+}
+.lock-success-msg {
+  font-size: 16px;
+  font-weight: 600;
+  color: #34d399;
+  margin-bottom: 8px;
+}

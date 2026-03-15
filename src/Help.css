@@ -1,0 +1,194 @@
+/* Help Penceresi Ana Düzen */
+.help-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background-color: #f8fafc;
+  color: #1e293b;
+  font-family: inherit;
+  overflow: hidden;
+}
+
+/* Başlık Çubuğu Düzeni */
+.title-bar {
+  flex-shrink: 0;
+  height: 32px;
+  background: #0f172a; 
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 9999;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.title-bar-drag-area {
+  flex: 1;
+  height: 100%;
+  -webkit-app-region: drag;
+}
+
+.title-bar-controls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.title-bar .control-btn {
+  background: transparent;
+  border: none;
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.title-bar .close-btn:hover {
+  background-color: #ef4444;
+  color: white;
+}
+
+/* İçerik Düzeni */
+.help-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  align-items: center;
+  padding: 40px 20px;
+}
+
+.help-header {
+  width: 100%;
+  max-width: 800px;
+  margin-bottom: 30px;
+  border-bottom: 2px solid #e2e8f0;
+  padding-bottom: 20px;
+}
+
+.help-header-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.help-icon {
+  color: #3b82f6;
+  margin-bottom: 12px;
+}
+
+.help-header-content h1 {
+  font-size: 26px;
+  font-weight: 800;
+  margin: 0;
+  color: #0f172a;
+}
+
+.help-header-content h2 {
+  font-size: 18px;
+  font-weight: 500;
+  margin: 6px 0 0 0;
+  color: #64748b;
+}
+
+.help-content {
+  width: 100%;
+  max-width: 800px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #334155;
+}
+
+.help-intro {
+  font-size: 16px;
+  color: #475569;
+  margin-bottom: 30px;
+  background-color: #f1f5f9;
+  padding: 16px;
+  border-radius: 8px;
+  border-left: 4px solid #3b82f6;
+}
+
+.help-section {
+  margin-bottom: 36px;
+}
+
+.help-section h3 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1d4ed8;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 10px;
+  margin-bottom: 16px;
+  margin-top: 0;
+}
+
+.help-section h4 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #0f172a;
+  margin-top: 24px;
+  margin-bottom: 12px;
+}
+
+.help-section p {
+  margin-bottom: 12px;
+}
+
+.help-section ul {
+  padding-left: 20px;
+  margin-bottom: 16px;
+}
+
+.help-section li {
+  margin-bottom: 8px;
+}
+
+.help-section strong {
+  color: #0f172a;
+}
+
+.help-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background-color: #fffbeb;
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 14px;
+  margin-top: 16px;
+}
+
+.help-note svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.help-footer {
+  margin-top: 50px;
+  text-align: center;
+  font-size: 13px;
+  color: #94a3b8;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 20px;
+}
+
+/* ====== MODAL GÖRSEL UYARI: KIRMIZI GÖLGE ====== */
+@keyframes flashRedGlow {
+  0%   { box-shadow: 0 0 0 0px rgba(239, 68, 68, 0); }
+  15%  { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.75), inset 0 0 0 2px rgba(239, 68, 68, 0.5); }
+  40%  { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0.55), inset 0 0 0 2px rgba(239, 68, 68, 0.4); }
+  70%  { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0.25), inset 0 0 0 2px rgba(239, 68, 68, 0.15); }
+  100% { box-shadow: 0 0 0 0px rgba(239, 68, 68, 0); }
+}
+
+.help-wrapper.flash-alert-active {
+  animation: flashRedGlow 0.7s ease-out forwards;
+}

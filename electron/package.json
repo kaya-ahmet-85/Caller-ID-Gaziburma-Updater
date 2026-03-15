@@ -1,0 +1,10 @@
+{
+  "name": "caller-id-electron",
+  "version": "1.0.0",
+  "description": "Caller ID Desktop App - Electron Backend",
+  "main": "index.cjs",
+  "type": "commonjs",
+  "dependencies": {
+    "node-hid": "^3.1.1"
+  }
+}

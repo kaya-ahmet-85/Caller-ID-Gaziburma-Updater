@@ -1,0 +1,969 @@
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const crypto = require('crypto');
+const child_process = require('child_process');
+
+// const HID = require('node-hid'); // Artık C# Bridge kullanıyoruz
+const callerIdParser = require('./callerIdParser.js').default || require('./callerIdParser.js');
+const stateStore = require('./stateStore.js');
+// Vite'nin varsayılan geliştirme sunucusu portu
+const isDev = process.env.NODE_ENV === 'development';
+
+// ====== RAW YAZICI DLL CACHE ======
+// C# kodu her seferinde derlenmek yerine bir kez derlenir ve DLL olarak kaydedilir.
+// Sonraki çağrılarda sadece DLL yüklenir (~100ms vs ~3-5sn derleme süresi).
+let rawPrinterDllPath = null; // app.getPath('userData') app.ready sonrası kullanılabilir
+
+// Tüm PS scriptleri için ortak RawPrinterCore tanımını yükleyen PS başlığı
+const getRawPrinterPsHeader = () => {
+  const dllPath = rawPrinterDllPath.replace(/\\/g, '\\\\');
+  return `
+$dllPath = "${dllPath}"
+$typeDef = @'
+using System;
+using System.Runtime.InteropServices;
+public class RawPrinterCore {
+    [DllImport("winspool.drv", CharSet=CharSet.Ansi)]
+    public static extern bool OpenPrinter(string pPrinterName, out IntPtr hPrinter, IntPtr pDefault);
+    [DllImport("winspool.drv")]
+    public static extern bool ClosePrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", CharSet=CharSet.Ansi)]
+    public static extern int StartDocPrinter(IntPtr hPrinter, int Level, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOA di);
+    [DllImport("winspool.drv")]
+    public static extern bool EndDocPrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv")]
+    public static extern bool StartPagePrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv")]
+    public static extern bool EndPagePrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv")]
+    public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
+    public class DOCINFOA {
+        [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
+        [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;
+        [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
+    }
+}
+'@
+if (-not (Test-Path $dllPath)) {
+    Add-Type -TypeDefinition $typeDef -OutputAssembly $dllPath -ErrorAction Stop
+}
+Add-Type -Path $dllPath -ErrorAction Stop
+`;
+};
+
+let mainWindow;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 1024,
+    minHeight: 768,
+    frame: false, // Çerçeveyi kaldır
+    transparent: false,
+    show: false,
+    // Önce kapalı başlatıp sonra maximize edeceğiz
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, '../electron/preload.cjs')
+    }
+  });
+
+  // Üst menü çubuğunu tamamen kaldır (File, Edit vb.)
+  mainWindow.setMenu(null);
+
+  if (isDev) {
+    mainWindow.loadURL('http://localhost:5173');
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../../dist', 'index.html'));
+  }
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.maximize(); // Tam ekran (Maximize) başlat
+    mainWindow.show();
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// ====== MODAL PENCERE YARDIMCI FONKSİYONU ======
+// İleride eklenecek tüm alt pencereler (Ayarlar, Yardım, vb.) bu fonksiyon ile oluşturulmalıdır.
+// Bu sayede her alt pencere otomatik olarak modal olur ve ana pencereyi bloklar.
+// Ana pencereye tıklanırsa Windows otomatik hata sesi çalar.
+function createChildWindow(options = {}) {
+  const childWindow = new BrowserWindow({
+    width: options.width || 900,
+    height: options.height || 600,
+    minWidth: options.minWidth || 700,
+    minHeight: options.minHeight || 500,
+    parent: mainWindow,    // Ana pencereye bağla
+    modal: true,           // Modal yap (Ana pencere bloklanır, tıklanırsa sistem sesi çalar)
+    frame: false,
+    transparent: false,
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, '../electron/preload.cjs')
+    }
+  });
+
+  childWindow.setMenu(null);
+
+  // URL veya hash route yükle
+  if (options.route) {
+    if (isDev) {
+      childWindow.loadURL(`http://localhost:5173/#/${options.route}`);
+    } else {
+      const distPath = path.join(__dirname, '../../dist', 'index.html');
+      childWindow.loadURL(`file://${distPath}#/${options.route}`);
+    }
+  }
+
+  childWindow.once('ready-to-show', () => {
+    childWindow.show();
+  });
+
+  return childWindow;
+}
+
+// ====== C# BRIDGE CALLER ID ENTEGRASYONU ======
+const { spawn } = require('child_process');
+let bridgeProcess = null;
+
+function connectToCallerId() {
+  const bridgePath = path.join(__dirname, 'bridge/GCallerIDBridge.exe');
+  console.log('Caller ID Bridge başlatılıyor:', bridgePath);
+
+  try {
+    bridgeProcess = spawn(bridgePath, [], {
+      cwd: path.dirname(bridgePath)
+    });
+
+    bridgeProcess.stdout.on('data', (data) => {
+      const output = data.toString();
+      // Satırları \r\n veya \n formatına göre ayırıp her birini trim et
+      const lines = output.split(/\r?\n/);
+
+      lines.forEach(line => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+          callerIdParser.handleBridgeData(trimmed);
+        } else if (trimmed) {
+          console.log('[Bridge Log]:', trimmed);
+        }
+      });
+    });
+
+    bridgeProcess.stderr.on('data', (data) => {
+      console.error('[Bridge Error]:', data.toString());
+    });
+
+    bridgeProcess.on('close', (code) => {
+      console.log(`Bridge süreci kapandı (Kod: ${code}). 3 saniye sonra yeniden denenecek...`);
+      bridgeProcess = null;
+      if (mainWindow) mainWindow.webContents.send('usb-status', false);
+      setTimeout(connectToCallerId, 3000);
+    });
+
+    if (mainWindow) mainWindow.webContents.send('usb-status', true);
+
+  } catch (error) {
+    console.error('Bridge başlatılamadı:', error);
+    if (mainWindow) mainWindow.webContents.send('usb-status', false);
+    setTimeout(connectToCallerId, 5000);
+  }
+}
+
+console.log("ELECTRON OBJESI:", require('electron'));
+
+app.whenReady().then(() => {
+  // DLL cache yolunu app.userData altında tanımla (app ready sonrası kullanılabilir)
+  rawPrinterDllPath = path.join(app.getPath('userData'), 'raw_printer_core.dll');
+  console.log('[RawPrinter] DLL cache yolu:', rawPrinterDllPath);
+
+  createWindow();
+  connectToCallerId();
+
+  // Parser'dan gelen onRing eventini React'a dinletmek
+  callerIdParser.on('onRing', (callData) => {
+    if (mainWindow) {
+      mainWindow.webContents.send('caller-id-data', callData);
+    }
+  });
+  callerIdParser.on('onIdle', (idleData) => {
+    if (mainWindow) {
+      mainWindow.webContents.send('caller-id-data', idleData);
+    }
+  });
+
+  callerIdParser.on('sync-status', (syncInfo) => {
+    if (mainWindow) {
+      mainWindow.webContents.send('sync-status', syncInfo);
+    }
+  });
+
+  callerIdParser.on('global-data-updated', () => {
+    if (mainWindow) {
+      mainWindow.webContents.send('global-data-updated');
+    }
+  });
+
+  // Parser'dan gelen USB durum değişikliklerini arayüze ilet
+  callerIdParser.on('usb-status', (status) => {
+    if (mainWindow) {
+      mainWindow.webContents.send('usb-status', status);
+    }
+  });
+
+  // İnternet durumunu ana süreçten de kontrol edelim (Arayüz bazen yakalayamıyor)
+  setInterval(() => {
+    const isOnline = require('electron').net.isOnline();
+    if (mainWindow) {
+      mainWindow.webContents.send('internet-status', isOnline);
+    }
+  }, 5000);
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+  ipcMain.handle('manual-refresh', async (event, { lineLabel, phone }) => {
+    return await callerIdParser.manualRefresh(lineLabel, phone);
+  });
+  
+  ipcMain.handle('lookup-customer', (event, phone) => {
+    return callerIdParser.lookupCustomer(phone);
+  });
+
+  ipcMain.handle('force-sync', () => {
+    callerIdParser.forceSync();
+  });
+
+  ipcMain.handle('advanced-search', (event, query) => {
+    return callerIdParser.searchDatabase(query);
+  });
+
+  // ====== MODAL PENCERE GÖRSEL UYARI (KIRMIZI GÖLGE) ======
+  // Modal pencere açıkken kullanıcı arka planı tıkladığında, OS sesli uyarı verir.
+  // Bu fonksiyon ek olarak pencereye 'flash-alert' IPC mesajı göndererek
+  // frontend'de kırmızı gölge CSS animasyonunu tetikler.
+  const flashAlertWindow = (win) => {
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send('flash-alert');
+  };
+
+  // Ayarlar Penceresi (Modal - createChildWindow helper kullanılıyor)
+  let settingsWindow = null;
+  ipcMain.on('open-settings', () => {
+    if (settingsWindow) {
+      if (settingsWindow.isMinimized()) settingsWindow.restore();
+      settingsWindow.focus();
+      return;
+    }
+
+    settingsWindow = createChildWindow({
+      width: 900, height: 750, minWidth: 800, minHeight: 650,
+      route: 'settings'
+    });
+
+    // Windows modal pencereye arka plan tıklandığında modal'a
+    // yeniden focus gönderiyor — bunu yakalıyoruz.
+    // İlk açılıştaki focus'u atlamak için 900ms guard kullanılıyor.
+    let settingsFocusReady = false;
+    setTimeout(() => { settingsFocusReady = true; }, 900);
+    const onSettingsFocus = () => { if (settingsFocusReady) flashAlertWindow(settingsWindow); };
+    settingsWindow.on('focus', onSettingsFocus);
+
+    settingsWindow.on('closed', () => {
+      settingsWindow.removeListener('focus', onSettingsFocus);
+      settingsWindow = null;
+    });
+  });
+
+  ipcMain.on('close-settings', () => {
+    if (settingsWindow) {
+      settingsWindow.close();
+    }
+  });
+
+  // Yardım Penceresi (Modal - createChildWindow helper kullanılıyor)
+  let helpWindow = null;
+  ipcMain.on('open-help', () => {
+    if (helpWindow) {
+      if (helpWindow.isMinimized()) helpWindow.restore();
+      helpWindow.focus();
+      return;
+    }
+
+    helpWindow = createChildWindow({
+      width: 850, height: 700, minWidth: 700, minHeight: 500,
+      route: 'help'
+    });
+
+    // Aynı mekanizma: Help modal'a arka plan tıklandığında focus eventi yanı alınıyor.
+    let helpFocusReady = false;
+    setTimeout(() => { helpFocusReady = true; }, 900);
+    const onHelpFocus = () => { if (helpFocusReady) flashAlertWindow(helpWindow); };
+    helpWindow.on('focus', onHelpFocus);
+
+    helpWindow.on('closed', () => {
+      helpWindow.removeListener('focus', onHelpFocus);
+      helpWindow = null;
+    });
+  });
+
+  ipcMain.on('close-help', () => {
+    if (helpWindow) {
+      helpWindow.close();
+    }
+  });
+
+  // ====== HAT NUMARALARI YÖNETİMİ ======
+  const hatConfigPath = path.join(app.getPath('userData'), 'hat-config.json');
+
+  ipcMain.handle('get-hat-numbers', () => {
+    try {
+      if (fs.existsSync(hatConfigPath)) {
+        const data = JSON.parse(fs.readFileSync(hatConfigPath, 'utf-8'));
+        return data.hatNumbers || { 1: '', 2: '', 3: '' };
+      }
+    } catch (e) { console.error('Hat config yüklenemedi:', e); }
+    return { 1: '', 2: '', 3: '' };
+  });
+
+  ipcMain.handle('save-hat-numbers', (event, hatNumbers) => {
+    try {
+      fs.writeFileSync(hatConfigPath, JSON.stringify({ hatNumbers }, null, 2), 'utf-8');
+      if (mainWindow) mainWindow.webContents.send('hat-numbers-updated', hatNumbers);
+      return { success: true };
+    } catch (e) {
+      console.error('Hat config kaydedilemedi:', e);
+      return { success: false, error: e.message };
+    }
+  });
+
+  // ====== TEMA YÖNETİMİ (AÇIK / KOYU MOD) ======
+  const themeConfigPath = path.join(app.getPath('userData'), 'theme-config.json');
+
+  ipcMain.handle('get-theme', () => {
+    try {
+      if (fs.existsSync(themeConfigPath)) {
+        const data = JSON.parse(fs.readFileSync(themeConfigPath, 'utf-8'));
+        return data.theme || 'light';
+      }
+    } catch (e) { console.error('Tema config yüklenemedi:', e); }
+    return 'light';
+  });
+
+  ipcMain.handle('save-theme', (event, theme) => {
+    try {
+      fs.writeFileSync(themeConfigPath, JSON.stringify({ theme }, null, 2), 'utf-8');
+      // Ana pencereye tema değiştiğini bildir
+      if (mainWindow) mainWindow.webContents.send('theme-updated', theme);
+      return { success: true };
+    } catch (e) {
+      console.error('Tema config kaydedilemedi:', e);
+      return { success: false, error: e.message };
+    }
+  });
+
+  // ====== PAROLA YÖNETİMİ ======
+  const passwordConfigPath = path.join(app.getPath('userData'), 'password-config.json');
+  const sha256 = (str) => crypto.createHash('sha256').update(str).digest('hex');
+
+  ipcMain.handle('get-password-config', () => {
+    try {
+      if (fs.existsSync(passwordConfigPath)) {
+        const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));
+        // hash ve cevap hash'ini frontend'e döndürme — sadece meta verileri dön
+        return { enabled: data.enabled || false, secretQuestion: data.secretQuestion || '' };
+      }
+    } catch (e) { console.error('Parola config okunamadı:', e); }
+    return { enabled: false, secretQuestion: '' };
+  });
+
+  ipcMain.handle('save-password-config', (event, { enabled, password, secretQuestion, secretAnswer }) => {
+    try {
+      const existing = fs.existsSync(passwordConfigPath)
+        ? JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'))
+        : {};
+      const config = {
+        enabled,
+        passwordHash: password ? sha256(password) : (existing.passwordHash || ''),
+        secretQuestion: secretQuestion || (existing.secretQuestion || ''),
+        secretAnswerHash: secretAnswer ? sha256(secretAnswer.toLowerCase().trim()) : (existing.secretAnswerHash || '')
+      };
+      fs.writeFileSync(passwordConfigPath, JSON.stringify(config, null, 2), 'utf-8');
+      return { success: true };
+    } catch (e) {
+      console.error('Parola config kaydedilemedi:', e);
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('verify-password', (event, password) => {
+    try {
+      if (!fs.existsSync(passwordConfigPath)) return false;
+      const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));
+      return data.passwordHash === sha256(password);
+    } catch (e) { return false; }
+  });
+
+  ipcMain.handle('verify-secret-answer', (event, answer) => {
+    try {
+      if (!fs.existsSync(passwordConfigPath)) return false;
+      const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));
+      return data.secretAnswerHash === sha256(answer.toLowerCase().trim());
+    } catch (e) { return false; }
+  });
+
+  ipcMain.handle('reset-password', (event, newPassword) => {
+    try {
+      if (!fs.existsSync(passwordConfigPath)) return { success: false };
+      const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));
+      data.passwordHash = sha256(newPassword);
+      fs.writeFileSync(passwordConfigPath, JSON.stringify(data, null, 2), 'utf-8');
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  // ====== YÖNETİCİ ŞİFRESİ ======
+  // Sabit yönetici şifresi — SHA-256 hash olarak saklanır
+  const ADMIN_PASSWORD_HASH = sha256('04011985teknogoz');
+
+  ipcMain.handle('verify-admin-password', (event, pwd) => {
+    return sha256(pwd) === ADMIN_PASSWORD_HASH;
+  });
+
+  ipcMain.handle('admin-disable-password', async (event, adminPwd) => {
+    if (sha256(adminPwd) !== ADMIN_PASSWORD_HASH) {
+      return { success: false, error: 'Yanlış yönetici şifresi.' };
+    }
+    try {
+      const config = { enabled: false, passwordHash: '', secretQuestion: '', secretAnswerHash: '' };
+      fs.writeFileSync(passwordConfigPath, JSON.stringify(config, null, 2), 'utf-8');
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  // ====== DİL YÖNETİMİ ======
+  const languageConfigPath = path.join(app.getPath('userData'), 'language-config.json');
+
+  ipcMain.handle('get-language', () => {
+    try {
+      if (fs.existsSync(languageConfigPath)) {
+        const data = JSON.parse(fs.readFileSync(languageConfigPath, 'utf-8'));
+        return data.lang || 'tr';
+      }
+    } catch (e) { console.error('Dil config okunamadı:', e); }
+    return 'tr';
+  });
+
+  ipcMain.handle('save-language', (event, lang) => {
+    try {
+      fs.writeFileSync(languageConfigPath, JSON.stringify({ lang }, null, 2), 'utf-8');
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('apply-language', async (event, lang) => {
+    // 1. Dili kaydet
+    try {
+      fs.writeFileSync(languageConfigPath, JSON.stringify({ lang }, null, 2), 'utf-8');
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+
+    // 2. Settings penceresini kapat
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow && senderWindow !== mainWindow) {
+      senderWindow.close();
+    }
+
+    // 3. Ana pencereyi yeniden yükle (Vite dev server çalışmaya devam eder)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.reload();
+    }
+
+    return { success: true };
+  });
+
+  // ====== YAZICI YÖNETİMİ ======
+  const printerConfigPath = path.join(app.getPath('userData'), 'printer-config.json');
+
+  // Sistemdeki tüm yazıcıları listele
+  ipcMain.handle('get-printers', async () => {
+    try {
+      const printers = await mainWindow.webContents.getPrintersAsync();
+      return printers.map(p => ({
+        name: p.name,
+        displayName: p.displayName || p.name,
+        description: p.description || '',
+        status: p.status,
+        isDefault: p.isDefault
+      }));
+    } catch (error) {
+      console.error('Yazıcı listesi alınamadı:', error);
+      return [];
+    }
+  });
+
+  // Seçilen yazıcıyı kaydet
+  ipcMain.handle('save-printer-selection', (event, printerName) => {
+    try {
+      const fs = require('fs');
+      fs.writeFileSync(printerConfigPath, JSON.stringify({ selectedPrinter: printerName }, null, 2), 'utf-8');
+      console.log('Yazıcı seçimi kaydedildi:', printerName);
+      return { success: true };
+    } catch (error) {
+      console.error('Yazıcı seçimi kaydedilemedi:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Kaydedilmiş yazıcı seçimini yükle
+  ipcMain.handle('get-printer-selection', () => {
+    try {
+      const fs = require('fs');
+      if (fs.existsSync(printerConfigPath)) {
+        const data = JSON.parse(fs.readFileSync(printerConfigPath, 'utf-8'));
+        return data.selectedPrinter || null;
+      }
+    } catch (error) {
+      console.error('Yazıcı seçimi yüklenemedi:', error);
+    }
+    return null;
+  });
+
+  // ====== RAW HARDWARE CUT (YARDIMCI FONKSİYON) ======
+  // Sadece kağıtı ilerletir ve keser. Yazdırma işleminden sonra çağırılmalıdır.
+  const triggerHardwareCut = (printerName) => {
+    const fs = require('fs');
+    const os = require('os');
+    const { execFile } = require('child_process');
+
+    const ts = Date.now();
+    const psPath = path.join(os.tmpdir(), `cid_cut_${ts}.ps1`);
+
+    // 0x0A: Line Feed (İlerlet), 0x1D 0x56 0x42 0x00: GS V B 0 (Kesme Komutu)
+    // DLL cache kullanarak hızlı yükleme (Add-Type -OutputAssembly ile bir kez derlenir)
+    const psScript = getRawPrinterPsHeader() + `
+$printerName = '${printerName.replace(/'/g, "''")}'
+$bytes = [byte[]]@(0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x42, 0x00)
+
+$hPrinter = [IntPtr]::Zero
+$di = New-Object RawPrinterCore+DOCINFOA
+$di.pDocName  = "CUT_COMMAND"
+$di.pDataType = "RAW"
+
+if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero)) {
+    [RawPrinterCore]::StartDocPrinter($hPrinter, 1, $di) | Out-Null
+    [RawPrinterCore]::StartPagePrinter($hPrinter) | Out-Null
+    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+    [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)
+    $written = 0
+    [RawPrinterCore]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+    [RawPrinterCore]::EndPagePrinter($hPrinter) | Out-Null
+    [RawPrinterCore]::EndDocPrinter($hPrinter) | Out-Null
+    [RawPrinterCore]::ClosePrinter($hPrinter) | Out-Null
+}
+`;
+    fs.writeFileSync(psPath, psScript, 'utf-8');
+
+    execFile(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
+      { timeout: 15000 },
+      () => {
+        try { fs.unlinkSync(psPath); } catch (e) {}
+      }
+    );
+  };
+
+  // ====== YAZDIRMA (ESC/POS RAW PROTOCOL) ======
+  ipcMain.handle('print-customer-info', async (event, { name, phone, address }) => {
+    try {
+      let selectedPrinter = null;
+      if (fs.existsSync(printerConfigPath)) {
+        const config = JSON.parse(fs.readFileSync(printerConfigPath, 'utf-8'));
+        selectedPrinter = config.selectedPrinter || null;
+      }
+      if (!selectedPrinter) {
+        return { success: false, error: 'Yazıcı seçilmemiş. Lütfen Ayarlar > Yazıcı(lar) bölümünden bir yazıcı seçin.' };
+      }
+      console.log('[Print] ESC/POS RAW yazdırma başladı:', selectedPrinter);
+
+      const now = new Date();
+      const tarih = now.toLocaleDateString('tr-TR');
+      const saat  = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+
+      // ================================================================
+      // ŞABLON LAYOUT (sağ kenarlık 9mm sağa kaydırıldı → 70.5mm toplam)
+      // Yatay çizgi formatı: |------...------|  (köşelerde + YOK)
+      // Etiket: 17 char | Değer: 27 char → toplam 47 char (~70.5mm @ 1.5mm/char)
+      // 1(|) + 17 + 1(|) + 27 + 1(|) = 47
+      // ================================================================
+
+      const W   = 48;   // toplam satır genişliği
+      const LBL = 17;   // etiket sütunu
+      const VAL = 28;   // değer sütunu  (1+17+1+28+1 = 48)
+      // Teslimat/Tutar: CAL=LBL ve CAR=VAL → orta | aynı pozisyonda
+      const CAL = 17;   // Teslimat sol sütun (= LBL, çizgiler hizalı)
+      const CAR = 28;   // Tutar sağ sütun  (= VAL)
+
+      const pad = (str, len) => {
+        const s = (str || '').toString().substring(0, len);
+        return s + ' '.repeat(Math.max(0, len - s.length));
+      };
+      const center = (str, len) => {
+        const s = (str || '').toString().substring(0, len);
+        const sp = Math.max(0, len - s.length);
+        return ' '.repeat(Math.floor(sp / 2)) + s + ' '.repeat(Math.ceil(sp / 2));
+      };
+      const rjust = (str, len) => {
+        const s = (str || '').toString().substring(0, len);
+        return ' '.repeat(Math.max(0, len - s.length)) + s;
+      };
+      const textToBytes = (str) => Array.from(Buffer.from((str || '').toString(), 'binary'));
+
+      // Yatay çizgi: |-------...---------| (köşe ve kesişim = |, referansa uygun)
+      const hLine     = () => '|' + '-'.repeat(LBL) + '|' + '-'.repeat(VAL) + '|';
+      // Teslimat/Tutar ayracı
+      const hLineCols = () => '|' + '-'.repeat(CAL) + '|' + '-'.repeat(CAR) + '|';
+
+      // Standart 2 sütunlu satır: | etiket          | değer                  |
+      const dataRow = (label, value) => {
+        const rows = [];
+        const maxV = VAL - 1;
+        const valStr = (value || '').toString();
+        const chunks = [];
+        if (valStr.length === 0) {
+          chunks.push('');
+        } else {
+          for (let i = 0; i < valStr.length; i += maxV) {
+            chunks.push(valStr.substring(i, i + maxV));
+          }
+        }
+        chunks.forEach((chunk, idx) => {
+          const lbl = idx === 0 ? pad(label, LBL) : pad('', LBL);
+          rows.push('|' + lbl + '|' + ' ' + pad(chunk, maxV) + '|');
+        });
+        return rows;
+      };
+
+      // Teslimat / Tutar satırı
+      const colsRow = (left, right) => {
+        return '|' + center(left, CAL) + '|' + center(right, CAR) + '|';
+      };
+
+      // ================================================================
+      // FİŞ OLUŞTURMA
+      // ================================================================
+      const buildReceipt = () => {
+        const ESC = 0x1B;
+        const GS  = 0x1D;
+        const LF  = 0x0A;
+        const bytes = [];
+        const push = (...args) => args.forEach(b => bytes.push(b));
+        const line = (str) => { bytes.push(...textToBytes(str)); bytes.push(LF); };
+
+        push(ESC, 0x40); // Init
+
+        // === BAŞLIK: "gaziburma" - ortalı, kalın ===
+        push(ESC, 0x61, 0x01); // orta hizala
+        push(ESC, 0x45, 0x01); // bold
+        line('gaziburma');
+        push(ESC, 0x45, 0x00); // bold off
+        push(ESC, 0x61, 0x00); // sol hizala
+
+        // === HEADER TEK HÜCRE (2 satır) — ortada | yok ===
+        // Üst yatay çizgi — köşeler | ile temiz
+        line('|' + '-'.repeat(W - 2) + '|');
+        // İç genişlik = W-2 = 46 char. Sol bölge = LBL(17), Sağ bölge = W-2-LBL(29)
+        const hdrR = W - 2 - LBL; // 29 char — sağ yazı bölgesi (iç | yok)
+        // Satır 1: Gaziburma ortalı (Mustafa ile aynı eksen) | Telefon sağa yaslı — TEK HÜCRE
+        line('|' + center('Gaziburma', LBL) + rjust('(216) 354 27 27', hdrR) + '|');
+        // Satır 2: Mustafa sol bölge ortası | Pendik 4mm (~3 char) sağa kaydırılmış — TEK HÜCRE
+        line('|' + center('Mustafa', LBL) + pad('   Pendik', hdrR) + '|');
+        line(hLine());
+
+        // === SİPARİŞ TARİHİ ===
+        dataRow('Siparis Tarihi:', `${tarih} ${saat}`).forEach(r => line(r));
+        line(hLine());
+
+        // === TESLİMAT TARİHİ ===
+        dataRow('Teslimat Tarihi:', '').forEach(r => line(r));
+        line(hLine());
+
+        // === TEL ===
+        dataRow('Tel:', phone || '').forEach(r => line(r));
+        line(hLine());
+
+        // === SİPARİŞ VEREN ===
+        dataRow('Siparis Veren:', '').forEach(r => line(r));
+        line(hLine());
+
+        // === ALICI ===
+        dataRow('Alici:', name || '').forEach(r => line(r));
+        line(hLine());
+
+        // === ADRES ===
+        dataRow('Adres:', address || '').forEach(r => line(r));
+        line(hLine());
+
+        // === TESLİMAT | TUTAR BAŞLIK ===
+        push(ESC, 0x45, 0x01);
+        line(colsRow('Teslimat', 'Tutar'));
+        push(ESC, 0x45, 0x00);
+        line(hLineCols());
+
+        // === BOŞ SİPARİŞ ALANI ===
+        // Temiz dikey | hizalaması için ESC J KULLANILMIYOR — sadece tam satırlar
+        for (let i = 0; i < 17; i++) {
+          line('|' + ' '.repeat(CAL) + '|' + ' '.repeat(CAR) + '|');
+        }
+
+        // Alt kapanış
+        line(hLineCols());
+
+        // Kağıt ilerlet + kes
+        for (let i = 0; i < 8; i++) push(LF);
+        push(GS, 0x56, 0x42, 0x00);
+
+        return Buffer.from(bytes);
+      };
+
+
+      const receiptBuf = buildReceipt();
+      const ts = Date.now();
+      const binPath = path.join(os.tmpdir(), `siparis_escpos_${ts}.bin`);
+      fs.writeFileSync(binPath, receiptBuf);
+
+      // winspool.drv üzerinden RAW yazdırma — DLL cache ile hızlı (ilk baskıda derlenir, sonraki baskılar ~100ms)
+      const psScript = getRawPrinterPsHeader() + `
+$printerName = '${selectedPrinter.replace(/'/g, "''")}'
+$bytes = [System.IO.File]::ReadAllBytes("${binPath.replace(/\\/g, '\\\\')}")
+
+$hPrinter = [IntPtr]::Zero
+$di = New-Object RawPrinterCore+DOCINFOA
+$di.pDocName  = "SIPARIS_FISI"
+$di.pDataType = "RAW"
+
+if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero)) {
+    [RawPrinterCore]::StartDocPrinter($hPrinter, 1, $di) | Out-Null
+    [RawPrinterCore]::StartPagePrinter($hPrinter) | Out-Null
+    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+    [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)
+    $written = 0
+    [RawPrinterCore]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+    [RawPrinterCore]::EndPagePrinter($hPrinter) | Out-Null
+    [RawPrinterCore]::EndDocPrinter($hPrinter) | Out-Null
+    [RawPrinterCore]::ClosePrinter($hPrinter) | Out-Null
+}
+
+Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction SilentlyContinue
+`;
+
+      const psPath = path.join(os.tmpdir(), `siparis_print_${ts}.ps1`);
+      fs.writeFileSync(psPath, psScript, 'utf-8');
+
+      return new Promise((resolve) => {
+        child_process.execFile(
+          'powershell',
+          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
+          { timeout: 30000 },
+          (err) => {
+            try { fs.unlinkSync(psPath); } catch(e) {}
+            if (err) {
+              console.error('[Print] RAW yazdırma hatası:', err);
+              resolve({ success: false, error: err.message });
+            } else {
+              console.log('[Print] ESC/POS RAW yazdırma başarılı.');
+              resolve({ success: true });
+            }
+          }
+        );
+      });
+
+    } catch (error) {
+      console.error('[Print] İstisna:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+
+
+  // ====== SINAMA SAYFASI YAZDIRMA (ESC/POS RAW PROTOCOL) ======
+  ipcMain.handle('print-test-page', async (event, printerName) => {
+    try {
+      console.log('[TestPrint] ESC/POS RAW sınama sayfası:', printerName);
+
+      const tarih = new Date().toLocaleDateString('tr-TR');
+      const saat  = new Date().toLocaleTimeString('tr-TR');
+      const LINE_WIDTH = 42;
+
+      const ESC = 0x1B;
+      const GS  = 0x1D;
+      const LF  = 0x0A;
+      const sepLine = Array(LINE_WIDTH).fill(0x2D);
+      const textToBytes = (str) => Array.from(Buffer.from((str || '').toString(), 'binary'));
+
+      const bytes = [];
+      const push = (...args) => args.forEach(b => bytes.push(b));
+      const pushArr = (arr) => arr.forEach(b => bytes.push(b));
+
+      push(ESC, 0x40); // Init
+
+      // Başlık (Ortalı, Büyük, Kalın)
+      push(ESC, 0x61, 0x01); // orta
+      push(ESC, 0x45, 0x01); // bold
+      push(ESC, 0x21, 0x30); // Double width/height
+      pushArr(textToBytes('SINAMA SAYFASI'));
+      push(LF);
+      push(ESC, 0x21, 0x00); // normal
+      push(ESC, 0x45, 0x00); // bold off
+
+      push(ESC, 0x61, 0x01);
+      pushArr(textToBytes('Caller ID Sistemi'));
+      push(LF);
+      push(ESC, 0x61, 0x00); // sola
+
+      pushArr(sepLine); push(LF);
+
+      pushArr(textToBytes(`Yazici: ${printerName}`)); push(LF);
+      pushArr(textToBytes(`Tarih:  ${tarih}`)); push(LF);
+      pushArr(textToBytes(`Saat:   ${saat}`)); push(LF);
+
+      pushArr(sepLine); push(LF);
+
+      // Mesaj satırları
+      const msg = 'Bu yaziyi okuyabiliyorsaniz, yazici bilgisayariniza duzgun bir sekilde kurulmus ve Caller ID Programi ile stabil calisiyordur.';
+      for (let i = 0; i < msg.length; i += LINE_WIDTH) {
+        pushArr(textToBytes(msg.substring(i, i + LINE_WIDTH)));
+        push(LF);
+      }
+
+      pushArr(sepLine); push(LF);
+
+      // Kağıt ilerlet + Kes
+      for (let i = 0; i < 10; i++) push(LF);
+      push(GS, 0x56, 0x42, 0x00);
+
+      const testBuf = Buffer.from(bytes);
+      const ts = Date.now();
+      const binPath = path.join(os.tmpdir(), `test_escpos_${ts}.bin`);
+      fs.writeFileSync(binPath, testBuf);
+
+      // DLL cache ile hızlı RAW yazdırma
+      const psScript = getRawPrinterPsHeader() + `
+$printerName = '${printerName.replace(/'/g, "''")}'
+$bytes = [System.IO.File]::ReadAllBytes("${binPath.replace(/\\/g, '\\\\')}")
+$hPrinter = [IntPtr]::Zero
+$di = New-Object RawPrinterCore+DOCINFOA
+$di.pDocName  = "TEST_PAGE"
+$di.pDataType = "RAW"
+if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero)) {
+    [RawPrinterCore]::StartDocPrinter($hPrinter, 1, $di) | Out-Null
+    [RawPrinterCore]::StartPagePrinter($hPrinter) | Out-Null
+    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+    [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)
+    $written = 0
+    [RawPrinterCore]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+    [RawPrinterCore]::EndPagePrinter($hPrinter) | Out-Null
+    [RawPrinterCore]::EndDocPrinter($hPrinter) | Out-Null
+    [RawPrinterCore]::ClosePrinter($hPrinter) | Out-Null
+}
+Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction SilentlyContinue
+`;
+
+      const psPath = path.join(os.tmpdir(), `test_print_${ts}.ps1`);
+      fs.writeFileSync(psPath, psScript, 'utf-8');
+
+      return new Promise((resolve) => {
+        child_process.execFile(
+          'powershell',
+          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
+          { timeout: 30000 },
+          (err) => {
+            try { fs.unlinkSync(psPath); } catch(e) {}
+            if (err) {
+              console.error('[TestPrint] RAW hatası:', err);
+              resolve({ success: false, error: err.message });
+            } else {
+              console.log('[TestPrint] ESC/POS RAW sınama başarılı.');
+              resolve({ success: true });
+            }
+          }
+        );
+      });
+
+    } catch (error) {
+      console.error('[TestPrint] İstisna:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+
+});
+
+
+
+app.on('window-all-closed', () => {
+
+  if (process.platform !== 'darwin') app.quit();
+});
+
+ipcMain.on('ping', (event, arg) => {
+  console.log('React (Frontend) tarafından mesaj alındı:', arg);
+  event.reply('pong', 'Electron (Backend) iletişim kurdu!');
+});
+
+// Pencere Kontrol IPC'leri
+ipcMain.on('window-minimize', () => {
+  if (mainWindow) mainWindow.minimize();
+});
+
+ipcMain.on('window-maximize', () => {
+  if (mainWindow) {
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow.maximize();
+    }
+  }
+});
+
+ipcMain.on('window-close', () => {
+  if (mainWindow) mainWindow.close();
+});
+
+ipcMain.on('open-external', (event, url) => {
+  shell.openExternal(url);
+});
+
+ipcMain.on('save-app-state', (event, state) => {
+  stateStore.save(state);
+});
+
+ipcMain.handle('get-app-state', () => {
+  return stateStore.load();
+});
+
+ipcMain.handle('get-usb-status', () => {
+  return bridgeProcess !== null;
+});

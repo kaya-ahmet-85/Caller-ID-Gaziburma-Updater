@@ -1,0 +1,20 @@
+{
+  "name": "src-electron",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "cross-env ELECTRON_RUN_AS_NODE= cross-env NODE_ENV=development electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "electron": "^40.8.0",
+    "fs": "^0.0.1-security",
+    "node-hid": "^3.3.0"
+  }
+}
