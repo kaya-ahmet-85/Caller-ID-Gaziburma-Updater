@@ -24,7 +24,8 @@ import {
   XCircle,
   Ban,
   RefreshCw,
-  Loader2
+  Loader2,
+  Info
 } from 'lucide-react';
 import './App.css';
 import LockScreen from './LockScreen.jsx';
@@ -826,6 +827,17 @@ function AppInner() {
             >
               <Settings size={20} />
               <span>{t('settings')}</span>
+            </div>
+            <div 
+              className="menu-item"
+              onClick={() => {
+                if (window.electronAPI && window.electronAPI.openAbout) {
+                  window.electronAPI.openAbout();
+                }
+              }}
+            >
+              <Info size={20} />
+              <span>Hakkında</span>
             </div>
             <div 
               className="menu-item"

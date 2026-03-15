@@ -50,6 +50,32 @@ const Settings = () => {
   const [selectedTheme, setSelectedTheme] = useState('light');
   const [themeSaveSuccess, setThemeSaveSuccess] = useState(false);
 
+  // Versiyon state'i
+  const [versionStr, setVersionStr] = useState('V1.0.0');
+  const [versionDate, setVersionDate] = useState('');
+  const [versionSaveSuccess, setVersionSaveSuccess] = useState(false);
+
+  // Versiyon bilgisini yükle
+  useEffect(() => {
+    if (window.electronAPI?.getVersion) {
+      window.electronAPI.getVersion().then(info => {
+        if (info) {
+          setVersionStr(info.version || 'V1.0.0');
+          setVersionDate(info.date || '');
+        }
+      });
+    }
+  }, []);
+
+  const handleSaveVersion = async () => {
+    if (!window.electronAPI?.saveVersion) return;
+    const result = await window.electronAPI.saveVersion({ version: versionStr, date: versionDate });
+    if (result.success) {
+      setVersionSaveSuccess(true);
+      setTimeout(() => setVersionSaveSuccess(false), 3000);
+    }
+  };
+
   // Temayı yükle
   useEffect(() => {
     if (window.electronAPI?.getTheme) {
@@ -341,16 +367,16 @@ const Settings = () => {
 
   // Yazıcı sekmesi içeriği
   const renderPrinterContent = () => {
-    if (loadingPrinters) {
+    if (loadingPrinters && printers.length === 0) {
       return (
         <div className="printer-loading">
           <Loader2 size={32} className="spinner" />
-          <span>Yazıcılar yükleniyor...</span>
+          <span>Yazıcılar taranıyor...</span>
         </div>
       );
     }
 
-    if (printers.length === 0) {
+    if (!loadingPrinters && printers.length === 0) {
       return (
         <div className="printer-empty">
           <Printer size={48} strokeWidth={1.5} />
@@ -519,7 +545,18 @@ const Settings = () => {
       case 'yazici': return (
         <div className="printer-section">
           <h3>{t('printerTitle')}</h3>
-          <p className="printer-section-desc">{t('printerDesc')}</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+            <p className="printer-section-desc" style={{ margin: 0, flex: 1 }}>{t('printerDesc')}</p>
+            <button
+              className="printer-refresh-btn"
+              onClick={loadPrinters}
+              disabled={loadingPrinters}
+              title="Yazıcı listesini yenile"
+            >
+              <RefreshCw size={14} className={loadingPrinters ? 'spinner' : ''} />
+              {loadingPrinters ? 'Taranıyor...' : 'Yenile'}
+            </button>
+          </div>
           {renderPrinterContent()}
         </div>
       );
@@ -737,10 +774,47 @@ const Settings = () => {
         </div>
       );
       case 'guncelleme': return (
-        <div className="settings-content-placeholder">
-          <h3>{t('menuUpdate2')}</h3>
-          <p>{t('sectionWip')}</p>
-          <p style={{ marginTop: '6px', fontSize: '13px', color: '#94a3b8' }}>{t('sectionWipContact')}</p>
+        <div className="settings-section">
+          <div className="settings-section-header">
+            <RefreshCw size={20} />
+            <span>Versiyon Güncelleme</span>
+          </div>
+          <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '20px', lineHeight: '1.6' }}>
+            Buradan program versiyonunu ve güncelleme tarihini düzenleyebilirsiniz.
+            Kaydettikten sonra <strong>Hakkında</strong> penceresinde güncel bilgi görünür.
+          </p>
+
+          <div className="hat-fields">
+            <div className="hat-field-row">
+              <label className="hat-field-label">Versiyon</label>
+              <input
+                className="hat-field-input"
+                type="text"
+                placeholder="Örn: V1.0.0"
+                value={versionStr}
+                onChange={e => setVersionStr(e.target.value)}
+              />
+            </div>
+            <div className="hat-field-row">
+              <label className="hat-field-label">Tarih</label>
+              <input
+                className="hat-field-input"
+                type="text"
+                placeholder="GG.AA.YYYY"
+                value={versionDate}
+                onChange={e => setVersionDate(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="printer-actions" style={{ marginTop: '20px' }}>
+            {versionSaveSuccess && (
+              <div className="printer-save-success">
+                <CheckCircle size={18} /><span>Versiyon bilgisi kaydedildi.</span>
+              </div>
+            )}
+            <button className="printer-save-btn" onClick={handleSaveVersion}>Kaydet</button>
+          </div>
         </div>
       );
       case 'log': return (

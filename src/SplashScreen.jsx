@@ -34,6 +34,12 @@ export default function SplashScreen({ onDone, duration = 4800 }) {
       {/* Merkez Nokta (çizgiler birleşince çakar) */}
       <div className="splash-center-dot" />
 
+      {/* Kızıl Çubuk Üst Yarısı — yukarı kayar */}
+      <div className="splash-bar-top" />
+
+      {/* Kızıl Çubuk Alt Yarısı — aşağı kayar */}
+      <div className="splash-bar-bottom" />
+
       {/* Logo — clip-path ile yatay→dikey açılır */}
       <div className="splash-logo-wrap">
         <img

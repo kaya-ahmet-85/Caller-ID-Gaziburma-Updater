@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   closeSettings: () => ipcRenderer.send('close-settings'),
   openHelp: () => ipcRenderer.send('open-help'),
   closeHelp: () => ipcRenderer.send('close-help'),
+  openAbout: () => ipcRenderer.send('open-about'),
   advancedSearch: (query) => ipcRenderer.invoke('advanced-search', query),
 
   // Yazıcı Yönetimi
@@ -99,5 +100,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveLanguage: (lang) => ipcRenderer.invoke('save-language', lang),
 
   // Dil Uygulama (kaydet + ana pencereyi yenile)
-  applyLanguage: (lang) => ipcRenderer.invoke('apply-language', lang)
+  applyLanguage: (lang) => ipcRenderer.invoke('apply-language', lang),
+
+  // Versiyon Yönetimi
+  getVersion: () => ipcRenderer.invoke('get-version'),
+  saveVersion: (data) => ipcRenderer.invoke('save-version', data),
 });

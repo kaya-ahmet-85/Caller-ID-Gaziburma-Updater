@@ -390,6 +390,60 @@ app.whenReady().then(() => {
     }
   });
 
+  // Hakkında Penceresi
+  let aboutWindow = null;
+  ipcMain.on('open-about', () => {
+    if (aboutWindow) {
+      if (aboutWindow.isMinimized()) aboutWindow.restore();
+      aboutWindow.focus();
+      return;
+    }
+
+    aboutWindow = createChildWindow({
+      width: 500, height: 440, minWidth: 460, minHeight: 400,
+      route: 'about'
+    });
+
+    let aboutFocusReady = false;
+    setTimeout(() => { aboutFocusReady = true; }, 900);
+    const onAboutFocus = () => { if (aboutFocusReady) flashAlertWindow(aboutWindow); };
+    aboutWindow.on('focus', onAboutFocus);
+
+    aboutWindow.on('closed', () => {
+      aboutWindow.removeListener('focus', onAboutFocus);
+      aboutWindow = null;
+    });
+  });
+
+  // ====== VERSİYON YÖNETİMİ ======
+  const versionConfigPath = path.join(app.getPath('userData'), 'version-config.json');
+
+  const getVersionConfig = () => {
+    try {
+      if (fs.existsSync(versionConfigPath)) {
+        return JSON.parse(fs.readFileSync(versionConfigPath, 'utf-8'));
+      }
+    } catch (e) { console.error('Versiyon config okunamadı:', e); }
+    // Varsayılan: V1.0.0 + bugünün tarihi
+    const today = new Date();
+    const dd = String(today.getDate()).padStart(2, '0');
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const yyyy = today.getFullYear();
+    return { version: 'V1.0.0', date: `${dd}.${mm}.${yyyy}` };
+  };
+
+  ipcMain.handle('get-version', () => getVersionConfig());
+
+  ipcMain.handle('save-version', (event, { version, date }) => {
+    try {
+      fs.writeFileSync(versionConfigPath, JSON.stringify({ version, date }, null, 2), 'utf-8');
+      return { success: true };
+    } catch (e) {
+      console.error('Versiyon config kaydedilemedi:', e);
+      return { success: false, error: e.message };
+    }
+  });
+
   // ====== HAT NUMARALARI YÖNETİMİ ======
   const hatConfigPath = path.join(app.getPath('userData'), 'hat-config.json');
 
@@ -772,7 +826,6 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
 
         push(ESC, 0x40);         // Printer init
         push(ESC, 0x74, 0x12);   // PC857 Türkçe kod sayfası—ş,ğ,ı,İ vs. doğru basar
-        push(ESC, 0x6A, 106);    // ESC j 106: kağıdı ~15mm geri çek (üst boşluğu kısalt)
 
         // Sadece değer kısmını bold yapan yardımcı:
         // |label           |(BOLD)değer                    |(/BOLD) LF
@@ -864,7 +917,7 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
 
           push(ESC, 0x32);        // Varsayilan satir araligina geri don (ESC 2)
           push(ESC, 0x61, 0x00);  // Sol hiza
-          push(ESC, 0x4A, 12);    // ~1.5mm bosluk (logo ile sablon arasi)
+          // Logo ile şablon arasında boşluk YOK (bitişik)
         } catch (e) {
           push(ESC, 0x61, 0x01);
           push(ESC, 0x45, 0x01);
@@ -923,15 +976,16 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
         // Alt kapanış
         line(hLineCols());
 
-        // Kağıt ilerlet + kes (~25mm hassas besleme, sonra kesme)
-        push(ESC, 0x4A, 177);    // ESC J 177: kağıdı ~25mm ilerlet (alt boşluğu kısalt)
+        // Kağıt ilerlet + kes (~10mm hassas besleme, sonra kesme)
+        // 177→71: 15mm azaltıldı (üst boşluğu kısaltmak için sonraki baskıya yansır)
+        push(ESC, 0x4A, 71);     // ESC J 71: kağıdı ~10mm ilerlet
         push(GS, 0x56, 0x42, 0x00);
 
         return Buffer.from(bytes);
       };
 
 
-      const receiptBuf = buildReceipt();
+      const receiptBuf = Buffer.concat([buildReceipt(), buildReceipt()]); // 2 kopya
       const ts = Date.now();
       const binPath = path.join(os.tmpdir(), `siparis_escpos_${ts}.bin`);
       fs.writeFileSync(binPath, receiptBuf);
@@ -1054,7 +1108,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
       pushArr(sepLine); push(LF);
 
       // Mesaj satırları
-      const msg = 'Bu yaziyi okuyabiliyorsaniz, yazici bilgisayariniza duzgun bir sekilde kurulmus ve Caller ID Programi ile stabil calisiyordur.';
+      const msg = "Bu yaziyi okuyabiliyorsaniz; Yazici bilgisayariniza nizami bir sekilde kurulmus, 'Caller ID' programina tanitilmis ve stabil bir sekilde calisiyordur.";
       for (let i = 0; i < msg.length; i += LINE_WIDTH) {
         pushArr(textToBytes(msg.substring(i, i + LINE_WIDTH)));
         push(LF);

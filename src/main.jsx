@@ -4,6 +4,7 @@ import './index.css'
 import App from './App.jsx'
 import Settings from './Settings.jsx'
 import Help from './Help.jsx'
+import About from './About.jsx'
 import SplashScreen from './SplashScreen.jsx'
 import { LanguageProvider } from './LanguageContext.jsx'
 
@@ -36,6 +37,12 @@ const renderApp = () => {
         <LanguageProvider>
           <Help />
         </LanguageProvider>
+      </StrictMode>
+    );
+  } else if (window.location.hash === '#/about') {
+    root.render(
+      <StrictMode>
+        <About />
       </StrictMode>
     );
   } else {

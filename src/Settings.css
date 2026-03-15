@@ -418,13 +418,42 @@
   font-size: 15px;
 }
 
-.printer-loading .spinner {
+.spinner {
   animation: spin 1s linear infinite;
 }
 
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/* Yenile Butonu */
+.printer-refresh-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.printer-refresh-btn:hover:not(:disabled) {
+  background: #f0f9ff;
+  border-color: #38bdf8;
+  color: #0ea5e9;
+}
+
+.printer-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* Boş Durum */
