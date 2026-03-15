@@ -772,6 +772,7 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
 
         push(ESC, 0x40);         // Printer init
         push(ESC, 0x74, 0x12);   // PC857 Türkçe kod sayfası—ş,ğ,ı,İ vs. doğru basar
+        push(ESC, 0x6A, 106);    // ESC j 106: kağıdı ~15mm geri çek (üst boşluğu kısalt)
 
         // Sadece değer kısmını bold yapan yardımcı:
         // |label           |(BOLD)değer                    |(/BOLD) LF
@@ -922,8 +923,8 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
         // Alt kapanış
         line(hLineCols());
 
-        // Kağıt ilerlet + kes
-        for (let i = 0; i < 8; i++) push(LF);
+        // Kağıt ilerlet + kes (~25mm hassas besleme, sonra kesme)
+        push(ESC, 0x4A, 177);    // ESC J 177: kağıdı ~25mm ilerlet (alt boşluğu kısalt)
         push(GS, 0x56, 0x42, 0x00);
 
         return Buffer.from(bytes);
