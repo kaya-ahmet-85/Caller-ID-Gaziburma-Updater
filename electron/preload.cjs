@@ -105,4 +105,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Versiyon Yönetimi
   getVersion: () => ipcRenderer.invoke('get-version'),
   saveVersion: (data) => ipcRenderer.invoke('save-version', data),
+
+  // Güncelleme Kontrolü (GitHub)
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+
+  // Lisans Aktivasyonu
+  activateLicense: (key) => ipcRenderer.invoke('activate-license', key),
+  licenseSuccess: () => ipcRenderer.send('license-success'),
 });

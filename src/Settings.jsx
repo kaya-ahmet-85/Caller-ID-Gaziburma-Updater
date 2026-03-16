@@ -50,29 +50,24 @@ const Settings = () => {
   const [selectedTheme, setSelectedTheme] = useState('light');
   const [themeSaveSuccess, setThemeSaveSuccess] = useState(false);
 
-  // Versiyon state'i
-  const [versionStr, setVersionStr] = useState('V1.0.0');
-  const [versionDate, setVersionDate] = useState('');
-  const [versionSaveSuccess, setVersionSaveSuccess] = useState(false);
+  // Güncelleme kontrolü state'i
+  // 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'error'
+  const [updateStatus, setUpdateStatus] = useState('idle');
+  const [updateInfo, setUpdateInfo] = useState(null); // { latestVersion, currentVersion, url }
 
-  // Versiyon bilgisini yükle
-  useEffect(() => {
-    if (window.electronAPI?.getVersion) {
-      window.electronAPI.getVersion().then(info => {
-        if (info) {
-          setVersionStr(info.version || 'V1.0.0');
-          setVersionDate(info.date || '');
-        }
-      });
-    }
-  }, []);
-
-  const handleSaveVersion = async () => {
-    if (!window.electronAPI?.saveVersion) return;
-    const result = await window.electronAPI.saveVersion({ version: versionStr, date: versionDate });
-    if (result.success) {
-      setVersionSaveSuccess(true);
-      setTimeout(() => setVersionSaveSuccess(false), 3000);
+  const handleCheckForUpdates = async () => {
+    setUpdateStatus('checking');
+    setUpdateInfo(null);
+    try {
+      // TODO: GitHub bağlantısı kurulduğunda window.electronAPI.checkForUpdates() aktif edilecek
+      // const result = await window.electronAPI.checkForUpdates();
+      // Şimdilik simüle ediyoruz (placeholder)
+      await new Promise(r => setTimeout(r, 1500));
+      // GitHub bağlantısı kurulana kadar placeholder mesaj
+      setUpdateStatus('github-pending');
+    } catch (err) {
+      setUpdateStatus('error');
+      setUpdateInfo({ error: err.message });
     }
   };
 
@@ -774,46 +769,93 @@ const Settings = () => {
         </div>
       );
       case 'guncelleme': return (
-        <div className="settings-section">
-          <div className="settings-section-header">
-            <RefreshCw size={20} />
-            <span>Versiyon Güncelleme</span>
-          </div>
-          <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '20px', lineHeight: '1.6' }}>
-            Buradan program versiyonunu ve güncelleme tarihini düzenleyebilirsiniz.
-            Kaydettikten sonra <strong>Hakkında</strong> penceresinde güncel bilgi görünür.
+        <div className="printer-section">
+          <h3>Güncelleme</h3>
+          <p className="printer-section-desc">
+            Programın en güncel sürümde olup olmadığını GitHub üzerinden kontrol edebilirsiniz.
           </p>
 
-          <div className="hat-fields">
-            <div className="hat-field-row">
-              <label className="hat-field-label">Versiyon</label>
-              <input
-                className="hat-field-input"
-                type="text"
-                placeholder="Örn: V1.0.0"
-                value={versionStr}
-                onChange={e => setVersionStr(e.target.value)}
-              />
-            </div>
-            <div className="hat-field-row">
-              <label className="hat-field-label">Tarih</label>
-              <input
-                className="hat-field-input"
-                type="text"
-                placeholder="GG.AA.YYYY"
-                value={versionDate}
-                onChange={e => setVersionDate(e.target.value)}
-              />
-            </div>
-          </div>
+          {/* Durum kutusu */}
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center',
+            gap: '20px', marginTop: '32px', maxWidth: '400px', margin: '32px auto 0'
+          }}>
 
-          <div className="printer-actions" style={{ marginTop: '20px' }}>
-            {versionSaveSuccess && (
-              <div className="printer-save-success">
-                <CheckCircle size={18} /><span>Versiyon bilgisi kaydedildi.</span>
-              </div>
-            )}
-            <button className="printer-save-btn" onClick={handleSaveVersion}>Kaydet</button>
+            {/* İkon ve durum mesajı */}
+            <div style={{ textAlign: 'center' }}>
+              {updateStatus === 'idle' && (
+                <>
+                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>🔄</div>
+                  <p style={{ fontSize: '14px', color: '#94a3b8' }}>Güncel sürüm kontrolü için butona tıklayın.</p>
+                </>
+              )}
+              {updateStatus === 'checking' && (
+                <>
+                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>
+                    <Loader2 size={48} className="spinner" style={{ color: '#38bdf8' }} />
+                  </div>
+                  <p style={{ fontSize: '14px', color: '#38bdf8', fontWeight: '600' }}>GitHub sorgulanıyor...</p>
+                </>
+              )}
+              {updateStatus === 'github-pending' && (
+                <>
+                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>⚙️</div>
+                  <p style={{ fontSize: '14px', color: '#f59e0b', fontWeight: '600' }}>GitHub bağlantısı henüz yapılandırılmadı.</p>
+                  <p style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px' }}>Bu özellik GitHub deposu bağlandığında aktif olacak.</p>
+                </>
+              )}
+              {updateStatus === 'up-to-date' && (
+                <>
+                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>✅</div>
+                  <p style={{ fontSize: '15px', color: '#16a34a', fontWeight: '700' }}>Program güncel!</p>
+                  {updateInfo && <p style={{ fontSize: '13px', color: '#64748b', marginTop: '4px' }}>Mevcut sürüm: {updateInfo.currentVersion}</p>}
+                </>
+              )}
+              {updateStatus === 'update-available' && (
+                <>
+                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>🆕</div>
+                  <p style={{ fontSize: '15px', color: '#0ea5e9', fontWeight: '700' }}>Yeni sürüm mevcut: {updateInfo?.latestVersion}</p>
+                  <p style={{ fontSize: '13px', color: '#64748b', marginTop: '4px' }}>Güncellemeyi indirmek için aşağıdaki butona tıklayın.</p>
+                </>
+              )}
+              {updateStatus === 'error' && (
+                <>
+                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>❌</div>
+                  <p style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>Bağlantı hatası.</p>
+                  <p style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>{updateInfo?.error}</p>
+                </>
+              )}
+            </div>
+
+            {/* Butonlar */}
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <button
+                className="printer-save-btn"
+                onClick={handleCheckForUpdates}
+                disabled={updateStatus === 'checking'}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '200px', justifyContent: 'center' }}
+              >
+                {updateStatus === 'checking'
+                  ? <><Loader2 size={16} className="spinner" /> Kontrol ediliyor...</>
+                  : <><RefreshCw size={16} /> Güncellemeleri Kontrol Et</>
+                }
+              </button>
+
+              {/* Güncelleme butonu — yeni sürüm varsa görünür */}
+              {updateStatus === 'update-available' && updateInfo?.url && (
+                <button
+                  onClick={() => window.electronAPI?.openExternal?.(updateInfo.url)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    padding: '10px 20px', background: 'linear-gradient(135deg,#0ea5e9,#0284c7)',
+                    border: 'none', borderRadius: '8px', color: '#fff',
+                    fontWeight: '700', fontSize: '14px', cursor: 'pointer'
+                  }}
+                >
+                  ⬇ İndir
+                </button>
+              )}
+            </div>
           </div>
         </div>
       );

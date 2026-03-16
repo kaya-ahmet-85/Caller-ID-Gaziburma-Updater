@@ -4,13 +4,29 @@ import './About.css';
 
 export default function About() {
   const [versionInfo, setVersionInfo] = useState({ version: 'V1.0.0', date: '...' });
+  // GitHub'dan gelen en son versiyon (bağlantı kurulduğunda dolar)
+  const [latestVersion, setLatestVersion] = useState(null); // örn: 'V1.2.0'
+  const [hasUpdate, setHasUpdate] = useState(false);
 
   useEffect(() => {
+    // Yerel versiyon bilgisini yükle
     if (window.electronAPI?.getVersion) {
       window.electronAPI.getVersion().then(info => {
         if (info) setVersionInfo(info);
       });
     }
+
+    // TODO: GitHub bağlantısı kurulduğunda aşağıdaki bloğu aktif et ─────────────
+    // window.electronAPI?.checkForUpdates?.().then(result => {
+    //   if (result?.hasUpdate) {
+    //     setHasUpdate(true);
+    //     setLatestVersion(`V${result.latestVersion}`);
+    //   } else if (result?.currentVersion) {
+    //     // Versiyon GitHub'dan geldi → göster
+    //     setVersionInfo(prev => ({ ...prev, version: result.currentVersion }));
+    //   }
+    // });
+    // ─────────────────────────────────────────────────────────────────────────────
   }, []);
 
   const handleClose = () => {
@@ -54,6 +70,22 @@ export default function About() {
               <div className="about-section-value">
                 {versionInfo.version}
                 <span className="about-version-date"> ({versionInfo.date})</span>
+                {/* TODO: GitHub bağlantısı kurulduğunda aktif olacak ─────────────────
+                {hasUpdate && latestVersion && (
+                  <span style={{
+                    marginLeft: '10px',
+                    padding: '2px 10px',
+                    background: '#0ea5e9',
+                    color: '#fff',
+                    borderRadius: '20px',
+                    fontSize: '11px',
+                    fontWeight: '700',
+                    verticalAlign: 'middle'
+                  }}>
+                    ↑ {latestVersion} mevcut
+                  </span>
+                )}
+                ──────────────────────────────────────────────────────────────── */}
               </div>
             </div>
           </div>

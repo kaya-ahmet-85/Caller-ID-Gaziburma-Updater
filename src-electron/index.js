@@ -8,6 +8,7 @@ const child_process = require('child_process');
 // const HID = require('node-hid'); // Artık C# Bridge kullanıyoruz
 const callerIdParser = require('./callerIdParser.js').default || require('./callerIdParser.js');
 const stateStore = require('./stateStore.js');
+const { verifyLicense, readLocalLicense } = require('./licenseCheck.js');
 // Vite'nin varsayılan geliştirme sunucusu portu
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -188,8 +189,60 @@ app.whenReady().then(() => {
   rawPrinterDllPath = path.join(app.getPath('userData'), 'raw_printer_core.dll');
   console.log('[RawPrinter] DLL cache yolu:', rawPrinterDllPath);
 
-  createWindow();
-  connectToCallerId();
+  // ── LİSANS KONTROLÜ ─────────────────────────────────────────────────────
+  let licenseWindow = null;
+
+  const openLicenseWindow = () => {
+    licenseWindow = new BrowserWindow({
+      width: 500, height: 500,
+      resizable: false,
+      frame: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, '../electron/preload.cjs')
+      }
+    });
+    licenseWindow.setMenu(null);
+    licenseWindow.loadFile(path.join(__dirname, 'license-activation.html'));
+    licenseWindow.on('closed', () => { licenseWindow = null; });
+  };
+
+  // activate-license: lisans aktivasyon penceresinden gelen doğrulama isteği
+  ipcMain.handle('activate-license', async (event, key) => {
+    const result = await verifyLicense(key);
+    return result;
+  });
+
+  // license-success: aktivasyon başarılı → pencereyi kapat, ana uygulamayı aç
+  ipcMain.on('license-success', () => {
+    if (licenseWindow) { licenseWindow.close(); licenseWindow = null; }
+    if (!mainWindow) {
+      createWindow();
+      connectToCallerId();
+    } else {
+      mainWindow.show();
+    }
+  });
+
+  // Lisans kontrolü: yerel cache varsa hızlı doğrula, yoksa aktivasyon penceresini aç
+  const local = readLocalLicense();
+  if (local && local.licenseKey) {
+    console.log('[License] Kayıtlı lisans bulundu, doğrulanıyor...');
+    verifyLicense(local.licenseKey).then(result => {
+      if (result.valid) {
+        console.log('[License] Lisans geçerli — ana pencere açılıyor.');
+        createWindow();
+        connectToCallerId();
+      } else {
+        console.warn('[License] Lisans geçersiz:', result.message);
+        openLicenseWindow();
+      }
+    });
+  } else {
+    console.log('[License] Kayıtlı lisans yok — aktivasyon penceresi açılıyor.');
+    openLicenseWindow();
+  }
 
   // Parser'dan gelen onRing eventini React'a dinletmek
   callerIdParser.on('onRing', (callData) => {
@@ -442,6 +495,44 @@ app.whenReady().then(() => {
       console.error('Versiyon config kaydedilemedi:', e);
       return { success: false, error: e.message };
     }
+  });
+
+  // ====== GÜNCELLEME KONTROLÜ (GitHub) ======
+  // TODO: GitHub deposu bağlandığında aşağıdaki satırları aktif et:
+  //   const GITHUB_OWNER = 'kullanici-adi';
+  //   const GITHUB_REPO  = 'Caller-ID-Gaziburma';
+  //   const GITHUB_API   = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+  //
+  // Şimdilik IPC altyapısı hazır — frontend placeholder mesaj gösteriyor.
+  ipcMain.handle('check-for-updates', async () => {
+    // ── GitHub bağlantısı aktif olduğunda bu blok devreye girecek ──────────
+    // const https = require('https');
+    // const currentVersion = getVersionConfig().version.replace(/^V/i, '');
+    // return new Promise((resolve) => {
+    //   const req = https.get(GITHUB_API, { headers: { 'User-Agent': 'CallerID-Updater' } }, (res) => {
+    //     let data = '';
+    //     res.on('data', chunk => { data += chunk; });
+    //     res.on('end', () => {
+    //       try {
+    //         const release = JSON.parse(data);
+    //         const latestVersion = release.tag_name?.replace(/^v/i, '') || '';
+    //         const isNewer = latestVersion.localeCompare(currentVersion, undefined, { numeric: true }) > 0;
+    //         resolve({
+    //           hasUpdate: isNewer,
+    //           currentVersion: `V${currentVersion}`,
+    //           latestVersion: `V${latestVersion}`,
+    //           url: release.html_url || ''
+    //         });
+    //       } catch (e) {
+    //         resolve({ error: 'Yanıt ayrıştırılamadı: ' + e.message });
+    //       }
+    //     });
+    //   });
+    //   req.on('error', (e) => resolve({ error: e.message }));
+    //   req.end();
+    // });
+    // ── Placeholder (GitHub bağlantısı olmadan) ──────────────────────────
+    return { pending: true, message: 'GitHub deposu henüz bağlanmadı.' };
   });
 
   // ====== HAT NUMARALARI YÖNETİMİ ======

@@ -1,14 +1,21 @@
 const { spawn } = require('child_process');
+const path = require('path');
 
-// Bu satır ortam değişkenini KÖKTEN siler
+// ELECTRON_RUN_AS_NODE=1 sisteme set olmuşsa, electron API'sini kırar.
+// Bu satır ortam değişkenini env'den siler.
 delete process.env.ELECTRON_RUN_AS_NODE;
 
-console.log("Starting Electron...");
+process.env.NODE_ENV = process.env.NODE_ENV || 'development';
 
-const proc = spawn('npx', ['electron', '.'], {
+console.log("Starting Electron from:", __dirname);
+
+const electronBin = require('electron');
+
+const proc = spawn(electronBin, ['.'], {
   stdio: 'inherit',
   env: process.env,
-  shell: true
+  shell: false,
+  cwd: __dirname  // src-electron/ dizininden başlat → type:commonjs package.json
 });
 
 proc.on('close', (code) => {
