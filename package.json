@@ -1,7 +1,8 @@
 {
-  "name": "caller-id",
+  "name": "caller-id-gaziburma",
+  "productName": "Caller ID Gaziburma",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "src-electron/index.js",
   "scripts": {
@@ -10,7 +11,45 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron:start": "wait-on tcp:5173 && node src-electron/start.js",
-    "dev:electron": "concurrently -k \"npm run dev\" \"npm run electron:start\""
+    "dev:electron": "concurrently -k \"npm run dev\" \"npm run electron:start\"",
+    "electron:build": "vite build && electron-builder build --win --publish never",
+    "electron:publish": "vite build && electron-builder build --win --publish always"
+  },
+  "build": {
+    "appId": "com.teknogoz.callerid",
+    "productName": "Caller ID Gaziburma",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "src-electron/**/*",
+      "electron/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "src-electron/bridge",
+        "to": "bridge"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "public/gaziburma-logo.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": ["tr_TR"],
+      "language": "1055"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "kaya-ahmet-85",
+      "repo": "Caller-ID-Gaziburma-Updater",
+      "private": true
+    }
   },
   "dependencies": {
     "lucide-react": "^0.577.0",
@@ -26,6 +65,8 @@
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "40.8.0",
+    "electron-builder": "^26.8.1",
+    "electron-updater": "^6.8.3",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",

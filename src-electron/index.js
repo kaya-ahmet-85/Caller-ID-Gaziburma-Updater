@@ -12,6 +12,21 @@ const { verifyLicense, readLocalLicense } = require('./licenseCheck.js');
 // Vite'nin varsayılan geliştirme sunucusu portu
 const isDev = process.env.NODE_ENV === 'development';
 
+// ====== ELECTRON-UPDATER (GitHub Auto-Update) ======
+// Sadece üretim modunda aktif — dev modunda devre dışı bırakılır.
+// TODO: GitHub deposu yapılandırıldı → üretim build'inde otomatik aktif olur.
+let autoUpdater = null;
+if (!isDev) {
+  try {
+    autoUpdater = require('electron-updater').autoUpdater;
+    autoUpdater.autoDownload = false; // Kullanıcı onayı olmadan indirme
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.logger = null; // console.log'a yönlendirebilirsin: require('electron-log')
+  } catch (e) {
+    console.warn('[Updater] electron-updater yüklenemedi:', e.message);
+  }
+}
+
 // ====== RAW YAZICI DLL CACHE ======
 // C# kodu her seferinde derlenmek yerine bir kez derlenir ve DLL olarak kaydedilir.
 // Sonraki çağrılarda sadece DLL yüklenir (~100ms vs ~3-5sn derleme süresi).
@@ -497,42 +512,34 @@ app.whenReady().then(() => {
     }
   });
 
-  // ====== GÜNCELLEME KONTROLÜ (GitHub) ======
-  // TODO: GitHub deposu bağlandığında aşağıdaki satırları aktif et:
-  //   const GITHUB_OWNER = 'kullanici-adi';
-  //   const GITHUB_REPO  = 'Caller-ID-Gaziburma';
-  //   const GITHUB_API   = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
-  //
-  // Şimdilik IPC altyapısı hazır — frontend placeholder mesaj gösteriyor.
+  // ====== GÜNCELLEME KONTROLÜ (GitHub / electron-updater) ======
+  // Üretim modunda electron-updater ile GitHub'dan sürüm sorgular.
+  // Dev modunda bilgilendirici mesaj döndürür.
   ipcMain.handle('check-for-updates', async () => {
-    // ── GitHub bağlantısı aktif olduğunda bu blok devreye girecek ──────────
-    // const https = require('https');
-    // const currentVersion = getVersionConfig().version.replace(/^V/i, '');
-    // return new Promise((resolve) => {
-    //   const req = https.get(GITHUB_API, { headers: { 'User-Agent': 'CallerID-Updater' } }, (res) => {
-    //     let data = '';
-    //     res.on('data', chunk => { data += chunk; });
-    //     res.on('end', () => {
-    //       try {
-    //         const release = JSON.parse(data);
-    //         const latestVersion = release.tag_name?.replace(/^v/i, '') || '';
-    //         const isNewer = latestVersion.localeCompare(currentVersion, undefined, { numeric: true }) > 0;
-    //         resolve({
-    //           hasUpdate: isNewer,
-    //           currentVersion: `V${currentVersion}`,
-    //           latestVersion: `V${latestVersion}`,
-    //           url: release.html_url || ''
-    //         });
-    //       } catch (e) {
-    //         resolve({ error: 'Yanıt ayrıştırılamadı: ' + e.message });
-    //       }
-    //     });
-    //   });
-    //   req.on('error', (e) => resolve({ error: e.message }));
-    //   req.end();
-    // });
-    // ── Placeholder (GitHub bağlantısı olmadan) ──────────────────────────
-    return { pending: true, message: 'GitHub deposu henüz bağlanmadı.' };
+    if (isDev) {
+      // Dev modunda gerçek kontrol yapma
+      return { pending: true, message: 'Geliştirme modunda güncelleme kontrolü devre dışı.' };
+    }
+    if (!autoUpdater) {
+      return { error: 'Güncelleme modülü yüklenemedi.' };
+    }
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      const currentVersion = app.getVersion();
+      const latestVersion = result?.updateInfo?.version || currentVersion;
+      const hasUpdate = result?.updateInfo?.version
+        ? result.updateInfo.version !== currentVersion
+        : false;
+      return {
+        hasUpdate,
+        currentVersion: `v${currentVersion}`,
+        latestVersion: `v${latestVersion}`,
+        url: `https://github.com/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest`
+      };
+    } catch (err) {
+      console.error('[Updater] Güncelleme kontrolü hatası:', err.message);
+      return { error: err.message };
+    }
   });
 
   // ====== HAT NUMARALARI YÖNETİMİ ======

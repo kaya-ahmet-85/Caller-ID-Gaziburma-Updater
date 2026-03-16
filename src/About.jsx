@@ -16,17 +16,15 @@ export default function About() {
       });
     }
 
-    // TODO: GitHub bağlantısı kurulduğunda aşağıdaki bloğu aktif et ─────────────
-    // window.electronAPI?.checkForUpdates?.().then(result => {
-    //   if (result?.hasUpdate) {
-    //     setHasUpdate(true);
-    //     setLatestVersion(`V${result.latestVersion}`);
-    //   } else if (result?.currentVersion) {
-    //     // Versiyon GitHub'dan geldi → göster
-    //     setVersionInfo(prev => ({ ...prev, version: result.currentVersion }));
-    //   }
-    // });
-    // ─────────────────────────────────────────────────────────────────────────────
+    // GitHub'dan güncelleme kontrolü
+    window.electronAPI?.checkForUpdates?.().then(result => {
+      if (result?.hasUpdate) {
+        setHasUpdate(true);
+        setLatestVersion(result.latestVersion);
+      } else if (result?.currentVersion) {
+        setVersionInfo(prev => ({ ...prev, version: result.currentVersion }));
+      }
+    }).catch(() => { /* sessiz hata */ });
   }, []);
 
   const handleClose = () => {
@@ -70,7 +68,6 @@ export default function About() {
               <div className="about-section-value">
                 {versionInfo.version}
                 <span className="about-version-date"> ({versionInfo.date})</span>
-                {/* TODO: GitHub bağlantısı kurulduğunda aktif olacak ─────────────────
                 {hasUpdate && latestVersion && (
                   <span style={{
                     marginLeft: '10px',
@@ -85,7 +82,6 @@ export default function About() {
                     ↑ {latestVersion} mevcut
                   </span>
                 )}
-                ──────────────────────────────────────────────────────────────── */}
               </div>
             </div>
           </div>
