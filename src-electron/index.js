@@ -29,7 +29,7 @@ if (!isDev) {
       owner: 'kaya-ahmet-85',
       repo: 'Caller-ID-Gaziburma-Updater',
       private: true,
-      token: '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'
+      token: process.env.GH_TOKEN || ''
     });
   } catch (e) {
     console.warn('[Updater] electron-updater yüklenemedi:', e.message);
@@ -124,7 +124,15 @@ function createWindow() {
           currentVersion = pkg.version || currentVersion;
         } catch (e) { /* fallback: app.getVersion() */ }
 
-        const GH_TOKEN = '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';
+        // Token: GH_TOKEN ortam degiskeni veya yerel config
+        const tokenPath = path.join(app.getPath('userData'), 'gh-token.json');
+        let GH_TOKEN = process.env.GH_TOKEN || '';
+        try {
+          if (!GH_TOKEN && fs.existsSync(tokenPath)) {
+            GH_TOKEN = JSON.parse(fs.readFileSync(tokenPath, 'utf-8')).token || '';
+          }
+        } catch (_) {}
+        if (!GH_TOKEN) { console.log('[AutoUpdate] GH_TOKEN tanimli degil, guncelleme kontrolu atlanıyor.'); return; }
         const options = {
           hostname: 'api.github.com',
           path: '/repos/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest',
