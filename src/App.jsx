@@ -961,13 +961,10 @@ function AppInner() {
         </div>
       )}
 
-      {/* ÖZEL BAŞLIK ÇUBUĞU (TITLE BAR) */}
+      {/* ÖZEL BAŞLIK ÇUBUĞU — fare ekran üstüne gelince kayarak açılır */}
       <div className={`title-bar-content ${isTitleBarVisible ? 'visible' : ''}`}>
-        <div className="title-bar-drag">
-          <span className="title-bar-title">GAZİBURMA MUSTAFA - SİPARİŞ TAKİP SİSTEMİ</span>
-        </div>
         <div className="window-controls">
-          <button onClick={handleMinimize} className="control-btn minimize" title="Küçült">
+          <button onClick={handleMinimize} className="control-btn minimize" title="Simge Durumuna Küçült">
             <Minus size={16} />
           </button>
           <button onClick={handleMaximize} className="control-btn maximize" title="Ekranı Kapla">

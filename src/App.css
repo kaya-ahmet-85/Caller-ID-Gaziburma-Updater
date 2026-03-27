@@ -9,33 +9,40 @@
   /* Başlık çubuğu için yer ayarlandı */
 }
 
-/* Özel Başlık Çubuğu Styles (React Dinamik Çözümü) */
+/* Özel Başlık Çubuğu — içeriğin ÜZERİNDE kayan overlay */
 .title-bar-content {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 48px;
-  /* Daha kalın ve estetik bir bar */
-  background-color: var(--bg-sidebar);
-  border-bottom-left-radius: 0;
-  /* Tam genişlik olduğu için yuvarlak kenarları kaldırdık */
-  border-bottom-right-radius: 0;
+  height: 44px;
+  background-color: rgba(22, 34, 48, 0.96);
+  backdrop-filter: blur(8px);
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;   /* sadece sağ tarasında butonlar */
   align-items: center;
-  padding: 0 20px;
-  box-shadow: 0 4px 25px rgba(0, 0, 0, 0.5);
-  z-index: 9999;
+  padding: 0 8px;
+  z-index: 99999;
   transform: translateY(-100%);
-  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  opacity: 0;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  /* opacity vb. yok — sadece kayma animasyonu */
 }
 
 .title-bar-content.visible {
   transform: translateY(0);
-  opacity: 1;
+}
+
+/* Dış kaydırma çubukları gizle */
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+.app-container::-webkit-scrollbar,
+.main-content::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+}
+html, body, .app-container, .main-content {
+  overflow: hidden !important;
+  scrollbar-width: none;
 }
 
 .title-bar-drag {
@@ -304,6 +311,7 @@
 /* Ana İçerik Alanı */
 .main-content {
   flex: 1;
+  min-height: 0; /* flex child must allow shrinking */
   display: flex;
   flex-direction: column;
   background-color: var(--bg-light);
@@ -318,7 +326,6 @@
   justify-content: space-between;
   align-items: center;
   padding: 0 32px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   z-index: 5;
 }
 
@@ -350,20 +357,23 @@
 /* İçerik Düzeni (Layout: 4 Kutu gridi ve Sol Liste) */
 .content-area {
   flex: 1;
+  min-height: 0; /* critical: allows flex child to shrink below content size */
   display: flex;
-  padding: 8px 12px 12px 12px; /* Margins reduced from 16x 24px */
+  padding: 8px 12px 12px 12px;
   gap: 16px;
   overflow: hidden;
 }
 
 .lines-grid {
-  flex: var(--hat-boxes-flex-grow, 1) 0 var(--hat-boxes-width, auto);
+  flex: var(--hat-boxes-flex-grow, 1) 1 var(--hat-boxes-width, auto);
+  min-width: 0;
+  min-height: 0; /* critical: allows grid rows to stay fixed */
   width: var(--hat-boxes-width, auto);
   height: var(--hat-boxes-height, auto);
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  grid-template-rows: repeat(2, 1fr);
-  gap: 12px; /* Gaps significantly reduced to maximize box size */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .call-list-sidebar {
@@ -505,6 +515,7 @@
   flex-direction: column;
   gap: 10px; /* Reverted gap */
   flex: 1;
+  min-width: 0;
 }
 
 .detail-row {
@@ -534,6 +545,7 @@
   overflow-y: auto;
   line-height: 1.45;
   word-break: break-word;
+  white-space: normal;
   padding-right: 4px;      /* Scrollbar için boşluk */
 }
 
@@ -582,6 +594,7 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
+  min-width: 0;
 }
 
 .detail-label {
@@ -597,6 +610,10 @@
   font-size: 20px; /* Increased from 18px for better readability */
   font-weight: 700;
   color: white;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
 }
 
 .detail-value.phone {
@@ -698,17 +715,14 @@
   width: var(--calllist-width, 320px);
   height: var(--calllist-height, auto);
   flex-shrink: 0;
+  min-height: 0;
   background-color: #f1f5f9;
-  /* Soft gray backing matching standard UI forms */
   border-radius: 12px;
   display: flex;
   flex-direction: column;
   box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
-  /* Belirgin gölgeli kontur */
   border: 1px solid rgba(0, 0, 0, 0.05);
-  /* İnce bir dış çizgi */
   overflow: hidden;
-  /* Kenar yuvarlaklığını korumak için */
 }
 
 .call-list-header {

@@ -710,8 +710,17 @@ app.whenReady().then(() => {
   const versionConfigPath = path.join(app.getPath('userData'), 'version-config.json');
 
   ipcMain.handle('get-version', () => {
-    // Versiyon her zaman package.json'daki app sürümünden okunur
-    const appVersion = 'V' + app.getVersion();
+    // app.getVersion() dev modunda bazen doğru çalışmaz;
+    // package.json'dan doğrudan oku, fallback olarak app.getVersion() kullan
+    let rawVersion = '1.0.0';
+    try {
+      const pkgPath = path.join(__dirname, '../package.json');
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+      rawVersion = pkg.version || app.getVersion();
+    } catch (e) {
+      rawVersion = app.getVersion();
+    }
+    const appVersion = 'V' + rawVersion;
     let date;
     try {
       if (fs.existsSync(versionConfigPath)) {
@@ -1156,37 +1165,47 @@ app.whenReady().then(() => {
     if (ip) {
       // Ağ yazıcısı — TCP ile gerçek bağlantı testi
       console.log(`[Printer] Testing TCP on ${ip} ...`);
-      if (await tryTcp(ip, 9100, 3000)) { console.log('[Printer] READY:9100'); return 'ready'; }
-      if (await tryTcp(ip, 631, 3000)) { console.log('[Printer] READY:631'); return 'ready'; }
-      if (await tryTcp(ip, 80, 3000)) { console.log('[Printer] READY:80'); return 'ready'; }
-      console.log('[Printer] NOT READY (all ports failed)');
-      return 'not_ready';
+      if (await tryTcp(ip, 9100, 2000)) { console.log('[Printer] READY:9100'); return 'ready'; }
+      if (await tryTcp(ip, 631, 2000)) { console.log('[Printer] READY:631'); return 'ready'; }
+      if (await tryTcp(ip, 80, 2000)) { console.log('[Printer] READY:80'); return 'ready'; }
+      console.log('[Printer] TCP bails out, falling back to spooler/WMI check.');
     }
 
-    // IP alınamadı (USB / paylaşılan yazıcı) → WorkOffline + WMI kontrolü
-    // Get-Printer.PrinterStatus spooler önbelleği nedeniyle geç güncellenir.
-    // WorkOffline=True ve Win32_Printer.PrinterStatus=7 (Offline) anlık tepki verir.
-    console.log(`[Printer] No network IP — USB/WorkOffline+WMI check for '${printerName}'`);
+    // IP alınamadıysa veya TCP başarısızsa Spooler/WMI kontrolüne düşeriz
     const usbStatus = await new Promise((res) => {
-      // Tek PowerShell çağrısında üç değeri birden al:
-      // Satır 1: WorkOffline (True/False)
-      // Satır 2: Win32_Printer PrinterStatus sayısı (3=Idle, 7=Offline)
-      // Satır 3: Get-Printer PrinterStatus string (Idle/Normal/Offline)
-      const wmiName = escaped.replace(/\\/g, '\\\\');
-      const cmd3 = `powershell -NoProfile -NonInteractive -Command "$p=Get-Printer -Name '${escaped}' -ErrorAction Stop;$w=(Get-WmiObject -Class Win32_Printer -Filter \\"Name='${wmiName}'\\" -ErrorAction SilentlyContinue);Write-Output \\"$($p.WorkOffline)\\";Write-Output \\"$($w.PrinterStatus)\\";Write-Output \\"$($p.PrinterStatus)\\""`;
-      exec(cmd3, { timeout: 9000 }, (err3, out3) => {
-        if (err3) {
-          console.log(`[Printer] USB check error: ${err3.message}`);
-          res({ workOffline: false, wmiStatus: -1, spoolerStatus: 'unknown' });
-          return;
-        }
-        const lines = (out3 || '').trim().split(/\r?\n/).map(l => l.trim());
-        const workOffline = (lines[0] || '').toLowerCase() === 'true';
-        const wmiStatus = parseInt(lines[1] || '0', 10); // 3=Idle, 7=Offline
-        const spoolerStatus = (lines[2] || '').toLowerCase();
-        console.log(`[Printer] USB→ WorkOffline:${workOffline} WmiStatus:${wmiStatus} SpoolerStatus:${spoolerStatus}`);
-        res({ workOffline, wmiStatus, spoolerStatus });
-      });
+      if (ip) {
+        // Ağ yazıcısı için sadece Get-Printer kullan (WMI ağda zaman aşımına uğrayabiliyor)
+        const cmdNet = `powershell -NoProfile -NonInteractive -Command "$p=Get-Printer -Name '${escaped}' -ErrorAction Stop; Write-Output \\"$($p.WorkOffline)\\"; Write-Output \\"-1\\"; Write-Output \\"$($p.PrinterStatus)\\""`;
+        exec(cmdNet, { timeout: 8000 }, (errN, outN) => {
+          if (errN) {
+            console.log(`[Printer] Net check error: ${errN.message}`);
+            res({ workOffline: false, wmiStatus: -1, spoolerStatus: 'unknown' });
+            return;
+          }
+          const lines = (outN || '').trim().split(/\r?\n/).map(l => l.trim());
+          const workOffline = (lines[0] || '').toLowerCase() === 'true';
+          const spoolerStatus = (lines[2] || '').toLowerCase();
+          console.log(`[Printer] NetFallback→ WorkOffline:${workOffline} SpoolerStatus:${spoolerStatus}`);
+          res({ workOffline, wmiStatus: -1, spoolerStatus });
+        });
+      } else {
+        // USB/Paylaşılan yazıcı için WMI + Get-Printer kullan
+        const wmiName = escaped.replace(/\\/g, '\\\\');
+        const cmd3 = `powershell -NoProfile -NonInteractive -Command "$p=Get-Printer -Name '${escaped}' -ErrorAction Stop;$w=(Get-WmiObject -Class Win32_Printer -Filter \\"Name='${wmiName}'\\" -ErrorAction SilentlyContinue);Write-Output \\"$($p.WorkOffline)\\";Write-Output \\"$($w.PrinterStatus)\\";Write-Output \\"$($p.PrinterStatus)\\""`;
+        exec(cmd3, { timeout: 8000 }, (err3, out3) => {
+          if (err3) {
+            console.log(`[Printer] USB check error: ${err3.message}`);
+            res({ workOffline: false, wmiStatus: -1, spoolerStatus: 'unknown' });
+            return;
+          }
+          const lines = (out3 || '').trim().split(/\r?\n/).map(l => l.trim());
+          const workOffline = (lines[0] || '').toLowerCase() === 'true';
+          const wmiStatus = parseInt(lines[1] || '0', 10); // 3=Idle, 7=Offline
+          const spoolerStatus = (lines[2] || '').toLowerCase();
+          console.log(`[Printer] USB→ WorkOffline:${workOffline} WmiStatus:${wmiStatus} SpoolerStatus:${spoolerStatus}`);
+          res({ workOffline, wmiStatus, spoolerStatus });
+        });
+      }
     });
     // WorkOffline=True → kesinlikle bağlı değil
     if (usbStatus.workOffline) return 'not_ready';
@@ -1809,13 +1828,7 @@ ipcMain.on('open-external', (event, url) => {
   shell.openExternal(url);
 });
 
-ipcMain.on('save-app-state', (event, state) => {
-  stateStore.save(state);
-});
 
-ipcMain.handle('get-app-state', () => {
-  return stateStore.load();
-});
 
 ipcMain.handle('get-usb-status', () => {
   return bridgeProcess !== null;
