@@ -650,7 +650,7 @@ app.whenReady().then(() => {
       contactWindow.focus();
       return;
     }
-    contactWindow = createChildWindow({ width: 520, height: 560, minWidth: 480, minHeight: 500, route: 'contact' });
+    contactWindow = createChildWindow({ width: 520, height: 720, minWidth: 480, minHeight: 620, route: 'contact' });
     let contactFocusReady = false;
     setTimeout(() => { contactFocusReady = true; }, 900);
     const onContactFocus = () => { if (contactFocusReady) flashAlertWindow(contactWindow); };
