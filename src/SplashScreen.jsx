@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import './SplashScreen.css';
+import gaziburmaLogo from '/public/gaziburma-logo.png';
 
 const SPOKES = Array.from({ length: 12 });
 
@@ -43,7 +44,7 @@ export default function SplashScreen({ onDone, duration = 4800 }) {
       {/* Logo — clip-path ile yatay→dikey açılır */}
       <div className="splash-logo-wrap">
         <img
-          src="/gaziburma-logo.png"
+          src={gaziburmaLogo}
           alt="Gaziburma Mustafa"
           className="splash-logo"
           draggable={false}

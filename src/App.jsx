@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import gaziburmaLogo from '../public/gaziburma-logo.png';
 import {
   PhoneCall,
   PhoneIncoming,
@@ -25,7 +26,9 @@ import {
   Ban,
   RefreshCw,
   Loader2,
-  Info
+  Info,
+  MessageSquare,
+  Phone
 } from 'lucide-react';
 import './App.css';
 import LockScreen from './LockScreen.jsx';
@@ -38,7 +41,9 @@ const emptyLineData = {
   name: 'Veri Bekleniyor',
   phone: 'Veri Bekleniyor',
   address: 'Veri Bekleniyor',
-  isIncoming: false
+  isIncoming: false,
+  results: [],
+  customerId: null
 };
 
 // Örnek Çağrı Geçmişi Verileri (Sıfırlandı)
@@ -55,6 +60,7 @@ function AppInner() {
   };
 
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [showContactModal, setShowContactModal] = useState(false);
   const [lines, setLines] = useState([
     { id: 1, label: 'L1', ...emptyLineData },
     { id: 2, label: 'L2', ...emptyLineData },
@@ -63,12 +69,63 @@ function AppInner() {
   ]);
   const [callHistory, setCallHistory] = useState(initialCallHistory);
   const [searchQuery, setSearchQuery] = useState('');
+
+  const callListScrollRef = useRef(null);
+  const scrollTimeoutRef = useRef(null);
+
+  const handleCallListScroll = () => {
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
+    }
+    
+    if (callListScrollRef.current && callListScrollRef.current.scrollTop > 0) {
+      scrollTimeoutRef.current = setTimeout(() => {
+        if (callListScrollRef.current) {
+          callListScrollRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      }, 5 * 60 * 1000); // 5 dakika inaktif kalınca üste kaydır
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    };
+  }, []);
+
+  // Ölçek Ayarları (Scale Settings) state'i
+  const [scaleSettings, setScaleSettings] = useState({
+    hatBoxes: { width: '', height: '' },
+    sidebar: { width: '', height: '' },
+    callList: { width: '', height: '' }
+  });
+
+  useEffect(() => {
+    if (window.electronAPI?.getScaleSettings) {
+      window.electronAPI.getScaleSettings().then(settings => {
+        if (settings) {
+          setScaleSettings(prev => ({ ...prev, ...settings }));
+        }
+      });
+    }
+
+    if (window.electronAPI?.onScaleSettingsUpdated) {
+      const cleanup = window.electronAPI.onScaleSettingsUpdated(settings => {
+        if (settings) {
+          setScaleSettings(prev => ({ ...prev, ...settings }));
+        }
+      });
+      return () => cleanup();
+    }
+  }, []);
   
-  // 4. Kutu (Gelişmiş Arama) State'leri
   const [box4Query, setBox4Query] = useState('');
   const [box4Results, setBox4Results] = useState([]);
   const [box4Selected, setBox4Selected] = useState(null);
   const [isBox4DropdownOpen, setIsBox4DropdownOpen] = useState(false);
+
+  // Hat 1, 2, 3 Çoklu Eşleşme (Dropdown)
+  const [openLineDropdownId, setOpenLineDropdownId] = useState(null);
 
   // Box 4 Arama Debounce Mimarisi
   useEffect(() => {
@@ -103,11 +160,14 @@ function AppInner() {
   const [isTitleBarVisible, setIsTitleBarVisible] = useState(false);
   const [usbStatus, setUsbStatus] = useState(false);
   const [internetStatus, setInternetStatus] = useState(navigator.onLine);
+  const [printerStatus, setPrinterStatus] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [selectedDate, setSelectedDate] = useState(getLocalTodayStr()); // Varsayılan: Bugün
   const [lastResetDate, setLastResetDate] = useState(''); // En son sıfırlama yapılan gün
   const [syncStatus, setSyncStatus] = useState({ status: 'waiting', count: 0, time: '' });
   const [isManualSyncing, setIsManualSyncing] = useState(false);
+  const [autoUpdateInfo, setAutoUpdateInfo] = useState(null); // Otomatik güncelleme bildirimi
+  const [downloadProgress, setDownloadProgress] = useState(-1); // -1: bekleme, 0-100: ındiriliyor, 101: bitti
   const [hatNumbers, setHatNumbers] = useState({ 1: '', 2: '', 3: '' }); // Hat numaraları (Ayarlar'dan)
   const [theme, setTheme] = useState('light'); // Tema (light / dark)
   const [isLocked, setIsLocked] = useState(false);      // Kilit ekranı görünsün mü?
@@ -127,6 +187,24 @@ function AppInner() {
     box4SelectedRef.current = box4Selected;
   }, [lines, callHistory, box4Query, box4Selected]);
 
+  // Otomatik güncelleme bildirimi
+  useEffect(() => {
+    if (!window.electronAPI?.onAutoUpdateAvailable) return;
+    const cleanup = window.electronAPI.onAutoUpdateAvailable((info) => {
+      setAutoUpdateInfo(info);
+      setDownloadProgress(-1); // Her yeni bildirimde ilerlemeyi sıfırla
+    });
+    return () => cleanup && cleanup();
+  }, []);
+
+  // İndirme ilerleme dinleyicisi
+  useEffect(() => {
+    if (!window.electronAPI?.onDownloadProgress) return;
+    const cleanup = window.electronAPI.onDownloadProgress((pct) => {
+      setDownloadProgress(pct);
+    });
+    return cleanup;
+  }, []);
 
   // Title Bar Mouse Sensörü (Electron CSS bug'ına karşı React ile tam çözüm)
   useEffect(() => {
@@ -226,12 +304,17 @@ function AppInner() {
       window.electronAPI.getAppState().then(savedState => {
         if (savedState) {
           console.log("Kayıtlı oturum yüklendi:", savedState);
-          let loadedLines = (savedState.lines || []).map(line => ({
-            ...line,
-            // Açılışta çalma durumunu her zaman sıfırla (Sonsuz döngüyü engelle)
-            status: line.status === 'ARANIYOR' ? 'HAZIR' : line.status,
-            isIncoming: false
-          }));
+          let loadedLines = (savedState.lines || []).map(line => {
+            const isWaiting = line.name === 'Veri Bekleniyor';
+            return {
+              ...line,
+              // Açılışta çalma durumunu her zaman sıfırla (Sonsuz döngüyü engelle)
+              status: line.status === 'ARANIYOR' ? 'HAZIR' : line.status,
+              isIncoming: false,
+              results: isWaiting ? [] : (line.results || []),
+              customerId: isWaiting ? null : (line.customerId || null)
+            };
+          });
           
           // Hat 4'ü her zaman boş tut (User isteği)
           if (loadedLines[3]) loadedLines[3].isEmptyLine = true;
@@ -315,6 +398,8 @@ function AppInner() {
                 phone: data.phone,
                 name: data.name || 'Veri Bekleniyor',
                 address: data.address || 'Veri Bekleniyor',
+                customerId: data.customerId || null,
+                results: data.results || [],
                 date: dateStr,
                 time: timeStr,
                 isIncoming: true
@@ -345,7 +430,9 @@ function AppInner() {
                 ...newLines[lineIndex],
                 phone: data.phone,
                 name: data.name,
-                address: data.address
+                address: data.address,
+                customerId: data.customerId || null,
+                results: data.results || []
               };
             }
             return newLines;
@@ -432,61 +519,34 @@ function AppInner() {
     };
   }, []);
 
-  // Global Veri Güncelleme Dinleyicisi (Auto-Sync & Manual Refresh)
+  // Yazıcı Durum Kontrolü (Her 10 saniyede bir)
+  // getPrinterStatus → index.js'de PowerShell Get-Printer ile gerçek zamanlı sorgulama yapar.
+  // Bu yöntem hem USB hem ağ yazıcılarında doğru çalışır.
   useEffect(() => {
-    if (window.electronAPI && window.electronAPI.onGlobalDataUpdated) {
-      const cleanup = window.electronAPI.onGlobalDataUpdated(async () => {
-        console.log("[UI] Global veri güncelleme sinyali alındı. Ekranlar tazeleniyor...");
-        
-        const currentLines = linesRef.current;
-        const currentHistory = callHistoryRef.current;
-
-        // 1. Aktif Hatları Güncelle
-        const updatedLinesArray = await Promise.all(currentLines.map(async line => {
-          if (line.phone && line.phone !== 'Veri Bekleniyor' && line.phone !== 'Bilinmiyor') {
-            try {
-              const freshData = await window.electronAPI.lookupCustomer(line.phone);
-              if (freshData) {
-                return { ...line, name: freshData.name, address: freshData.address };
-              }
-            } catch (e) {
-              console.error("[UI] Hat güncelleme hatası:", e);
-            }
-          }
-          return line;
-        }));
-        
-        setLines(updatedLinesArray);
-
-        // 2. Çağrı Geçmişini Güncelle
-        // Performans için sadece eşsiz numaraları sorgula
-        const uniquePhones = [...new Set(currentHistory.map(c => c.phone).filter(p => p && p !== 'Veri Bekleniyor' && p !== 'Bilinmiyor'))];
-        const updates = {};
-        
-        await Promise.all(uniquePhones.map(async phone => {
-          try {
-            const freshData = await window.electronAPI.lookupCustomer(phone);
-            if (freshData) {
-              updates[phone] = freshData;
-            }
-          } catch (e) {
-             console.error("[UI] Çağrı geçmişi güncelleme hatası:", e);
-          }
-        }));
-
-        if (Object.keys(updates).length > 0) {
-          setCallHistory(prev => prev.map(call => {
-            if (updates[call.phone]) {
-              return { ...call, name: updates[call.phone].name, address: updates[call.phone].address };
-            }
-            return call;
-          }));
-        }
-      });
-      return () => cleanup();
-    }
+    const checkPrinterStatus = async () => {
+      if (!window.electronAPI) return;
+      try {
+        // Önce seçili yazıcı adını al
+        const selectedName = window.electronAPI.getPrinterSelection
+          ? await window.electronAPI.getPrinterSelection()
+          : null;
+        if (!selectedName) { setPrinterStatus('not_selected'); return; }
+        // PowerShell ile gerçek zamanlı durum sorgula
+        const status = window.electronAPI.getPrinterStatus
+          ? await window.electronAPI.getPrinterStatus(selectedName)
+          : 'not_ready';
+        setPrinterStatus(status); // 'ready' | 'not_ready' | 'not_selected'
+      } catch (e) {
+        setPrinterStatus('not_ready');
+      }
+    };
+    checkPrinterStatus();
+    const interval = setInterval(checkPrinterStatus, 10000);
+    return () => clearInterval(interval);
   }, []);
 
+
+  // Global Veri Güncelleme Dinleyicisi (Auto-Sync & Manual Refresh)
   // Global Veri Güncelleme Dinleyicisi (Auto-Sync & Manual Refresh)
   useEffect(() => {
     if (window.electronAPI && window.electronAPI.onGlobalDataUpdated) {
@@ -502,7 +562,15 @@ function AppInner() {
             try {
               const freshData = await window.electronAPI.lookupCustomer(line.phone);
               if (freshData) {
-                return { ...line, name: freshData.name, address: freshData.address };
+                // Müşteri bulundu
+                return { ...line, name: freshData.name, address: freshData.address, results: freshData.results || [], customerId: freshData.id || null };
+              } else {
+                // Müşteri DB'de yok; "Sorgulanıyor..." durumundan çıkar
+                return {
+                  ...line,
+                  name: line.name === 'Sorgulanıyor...' ? 'Bilinmiyor' : line.name,
+                  address: line.address === 'Sorgulanıyor...' ? 'Bilinmiyor' : line.address
+                };
               }
             } catch (e) {
               console.error("[UI] Hat güncelleme hatası:", e);
@@ -514,7 +582,6 @@ function AppInner() {
         setLines(updatedLinesArray);
 
         // 2. Çağrı Geçmişini Güncelle
-        // Performans için sadece eşsiz numaraları sorgula
         const uniquePhones = [...new Set(currentHistory.map(c => c.phone).filter(p => p && p !== 'Veri Bekleniyor' && p !== 'Bilinmiyor'))];
         const updates = {};
         
@@ -522,7 +589,10 @@ function AppInner() {
           try {
             const freshData = await window.electronAPI.lookupCustomer(phone);
             if (freshData) {
-              updates[phone] = freshData;
+              updates[phone] = { name: freshData.name, address: freshData.address };
+            } else {
+              // DB'de yok; "Sorgulanıyor..." olan geçmiş kayıtlarını düzelt
+              updates[phone] = { name: 'Bilinmiyor', address: 'Bilinmiyor', notFound: true };
             }
           } catch (e) {
              console.error("[UI] Çağrı geçmişi güncelleme hatası:", e);
@@ -531,10 +601,17 @@ function AppInner() {
 
         if (Object.keys(updates).length > 0) {
           setCallHistory(prev => prev.map(call => {
-            if (updates[call.phone]) {
-              return { ...call, name: updates[call.phone].name, address: updates[call.phone].address };
+            const upd = updates[call.phone];
+            if (!upd) return call;
+            if (upd.notFound) {
+              // Sadece "Sorgulanıyor..." olanları düzelt, zaten "Bilinmiyor" olanları dokunma
+              return {
+                ...call,
+                name: call.name === 'Sorgulanıyor...' ? 'Bilinmiyor' : call.name,
+                address: call.address === 'Sorgulanıyor...' ? 'Bilinmiyor' : call.address
+              };
             }
-            return call;
+            return { ...call, name: upd.name, address: upd.address };
           }));
         }
 
@@ -557,6 +634,7 @@ function AppInner() {
       return () => cleanup();
     }
   }, []);
+
 
   const handleRefresh = async (lineLabel, phone) => {
     if (window.electronAPI && window.electronAPI.manualRefresh) {
@@ -739,6 +817,8 @@ function AppInner() {
     const targetCall = lineHistory[nextIndex];
     let freshName = targetCall.name || 'Veri Bekleniyor';
     let freshAddress = targetCall.address || 'Veri Bekleniyor';
+    let freshResults = [];
+    let freshCustomerId = null;
 
     // Geçmişte gezinirken her zaman anlık en güncel veriyi sor
     if (window.electronAPI && window.electronAPI.lookupCustomer) {
@@ -747,6 +827,8 @@ function AppInner() {
         if (freshData) {
           freshName = freshData.name;
           freshAddress = freshData.address;
+          freshResults = freshData.results || [];
+          freshCustomerId = freshData.id || null;
           
           // Aynı zamanda bellekteki genel arama geçmişini de güncelleyelim ki listede de düzelsin
           setCallHistory(prev => prev.map(c => 
@@ -765,6 +847,8 @@ function AppInner() {
           phone: targetCall.phone,
           name: freshName,
           address: freshAddress,
+          results: freshResults,
+          customerId: freshCustomerId,
           time: targetCall.time,
           date: targetCall.date
         };
@@ -774,13 +858,107 @@ function AppInner() {
   };
 
   return (
-    <div className="app-container">
-      {/* PAROLA KİLİT EKRANI */}
-      {isLocked && (
-        <LockScreen
-          secretQuestion={secretQuestion}
-          onUnlock={() => setIsLocked(false)}
-        />
+    <div 
+      className="app-container"
+      style={{
+        ...(scaleSettings?.sidebar?.width ? { '--sidebar-width': `${scaleSettings.sidebar.width}px` } : {}),
+        ...(scaleSettings?.sidebar?.height ? { '--sidebar-height': `${scaleSettings.sidebar.height}px` } : {}),
+        ...(scaleSettings?.callList?.width ? { '--calllist-width': `${scaleSettings.callList.width}px` } : {}),
+        ...(scaleSettings?.callList?.height ? { '--calllist-height': `${scaleSettings.callList.height}px` } : {}),
+        ...(scaleSettings?.hatBoxes?.width ? { '--hat-boxes-width': `${scaleSettings.hatBoxes.width}px`, '--hat-boxes-flex-grow': 0 } : {}),
+        ...(scaleSettings?.hatBoxes?.height ? { '--hat-boxes-height': `${scaleSettings.hatBoxes.height}px` } : {})
+      }}
+    >
+      <style>{`
+        @keyframes toastSlideIn {
+          from { opacity: 0; transform: translateY(20px) scale(0.95); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+      `}</style>
+
+      {/* ── İLETİŞİM MODAL ── */}
+      {showContactModal && (
+        <div
+          onClick={() => setShowContactModal(false)}
+          style={{
+            position: 'fixed', inset: 0,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 99999,
+            animation: 'contactFadeIn 0.25s ease'
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
+              borderRadius: '24px',
+              padding: '48px 44px',
+              width: '400px',
+              boxShadow: '0 30px 90px rgba(0,0,0,0.5)',
+              textAlign: 'center',
+              border: '1px solid rgba(255,255,255,0.08)',
+              animation: 'contactSlideUp 0.35s cubic-bezier(0.34,1.56,0.64,1)'
+            }}
+          >
+            {/* İkon */}
+            <div style={{
+              width: '72px', height: '72px',
+              borderRadius: '50%',
+              background: 'rgba(249,115,22,0.15)',
+              border: '2px solid rgba(249,115,22,0.4)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              margin: '0 auto 20px'
+            }}>
+              <Phone size={32} style={{ color: '#f97316' }} />
+            </div>
+
+            <h3 style={{ fontSize: '22px', fontWeight: '800', color: '#f8fafc', marginBottom: '6px' }}>
+              İletişim
+            </h3>
+            <div style={{
+              width: '40px', height: '3px',
+              background: 'linear-gradient(90deg,#f97316,#fb923c)',
+              borderRadius: '2px', margin: '0 auto 28px'
+            }} />
+
+            <p style={{ fontSize: '15px', color: '#94a3b8', marginBottom: '6px', fontWeight: '500' }}>
+              TeknoGöz Bilişim Sistemleri
+            </p>
+            <a
+              href="tel:+905343547495"
+              onClick={e => e.preventDefault()}
+              style={{
+                display: 'inline-block',
+                fontSize: '24px', fontWeight: '800',
+                color: '#f97316',
+                letterSpacing: '1px',
+                textDecoration: 'none',
+                marginBottom: '32px'
+              }}
+            >(534) 354 74 95</a>
+
+            <br />
+            <button
+              onClick={() => setShowContactModal(false)}
+              style={{
+                padding: '12px 40px',
+                background: 'rgba(249,115,22,0.15)',
+                border: '1.5px solid rgba(249,115,22,0.4)',
+                borderRadius: '12px', color: '#f97316',
+                fontWeight: '700', fontSize: '14px', cursor: 'pointer',
+                transition: 'all 0.2s'
+              }}
+            >Kapat</button>
+          </div>
+          <style>{`
+            @keyframes contactFadeIn { from{opacity:0} to{opacity:1} }
+            @keyframes contactSlideUp {
+              from{opacity:0;transform:translateY(40px) scale(0.95)}
+              to{opacity:1;transform:translateY(0) scale(1)}
+            }
+          `}</style>
+        </div>
       )}
 
       {/* ÖZEL BAŞLIK ÇUBUĞU (TITLE BAR) */}
@@ -806,7 +984,7 @@ function AppInner() {
         <div>
           <div className="sidebar-logo">
             <img
-              src="/src/assets/logo.png"
+              src={gaziburmaLogo}
               alt="Gaziburma Mustafa Logo"
               style={{ width: '100%', height: 'auto', objectFit: 'contain' }}
             />
@@ -850,6 +1028,26 @@ function AppInner() {
               <HelpCircle size={20} />
               <span>{lang === 'en' ? 'Help' : 'Yardım'}</span>
             </div>
+
+            {/* İletişim Butonu */}
+            <div
+              className="menu-item"
+              onClick={() => setShowContactModal(true)}
+              style={{ cursor: 'pointer' }}
+            >
+              <Phone size={20} />
+              <span style={{ fontWeight: '600' }}>{lang === 'en' ? 'Contact' : 'İletişim'}</span>
+            </div>
+
+            {/* Bize Yazın Butonu */}
+            <div
+              className="menu-item"
+              onClick={() => window.electronAPI && window.electronAPI.openContactForm && window.electronAPI.openContactForm()}
+              style={{ cursor: 'pointer' }}
+            >
+              <MessageSquare size={20} />
+              <span style={{ fontWeight: '600' }}>{lang === 'en' ? 'Write to Us' : 'Bize Yazın'}</span>
+            </div>
           </div>
         </div>
 
@@ -890,7 +1088,32 @@ function AppInner() {
             <div className="status-item">
               <div className="status-info">
                 <div className="status-label">
-                  <span>{lang === 'en' ? 'Database Update' : 'Veri Taban\u0131 G\u00FCncellemesi'}</span>
+                  <span>{lang === 'en' ? 'Printer Status' : 'Yazıcı Durumu'}</span>
+                </div>
+                <div className={`status-value ${
+                  printerStatus === 'ready' ? 'connected' :
+                  printerStatus === 'not_selected' ? 'disconnected' : 'disconnected'
+                }`}>
+                  <div className="status-dot"></div>
+                  <span>
+                    {printerStatus === 'ready'
+                      ? (lang === 'en' ? 'Printer Ready' : 'Yazıcı Bağlı (Hazır)')
+                      : printerStatus === 'not_selected'
+                        ? (lang === 'en' ? 'No Printer Selected' : 'Yazıcı Seçilmemiş')
+                        : (lang === 'en' ? 'Printer Not Ready' : 'Yazıcı Bağlı Değil')}
+                  </span>
+                </div>
+              </div>
+              <div className="status-icon-wrapper">
+                <Printer size={16} className="status-main-icon" />
+                {printerStatus !== 'ready' && <XCircle size={20} className="status-x-overlay" />}
+              </div>
+            </div>
+
+            <div className="status-item">
+              <div className="status-info">
+                <div className="status-label">
+                  <span>{lang === 'en' ? 'Database Update' : 'Veri Tabanı Güncellemesi'}</span>
                 </div>
                 <div className={`status-value ${internetStatus ? 'connected' : 'disconnected'}`}>
                   <div className="status-dot"></div>
@@ -976,7 +1199,7 @@ function AppInner() {
               const isAtNewest = currentIndex !== -1 && currentIndex === 0;
 
               return (
-                <div key={line.id} className={`line-box ${line.status === 'ARANIYOR' ? 'ringing' : ''}`} style={line.isEmptyLine ? { overflow: 'visible' } : {}}>
+                <div key={line.id} className={`line-box ${line.status === 'ARANIYOR' && !line.isEmptyLine ? 'ringing' : ''}`} style={line.isEmptyLine ? { overflow: 'visible' } : {}}>
                   {line.isEmptyLine ? (
                     <div className="box4-container">
                       <div className="box4-search-header">
@@ -1049,6 +1272,9 @@ function AppInner() {
                                       >
                                         <div className="box4-dropdown-item-name">{result.name}</div>
                                         <div className="box4-dropdown-item-phone">{result.phone}</div>
+                                        {result.address && result.address !== 'Bilinmiyor' && result.address !== 'Veri Bekleniyor' && (
+                                          <div className="box4-dropdown-item-address">{result.address}</div>
+                                        )}
                                       </div>
                                     ))}
                                   </div>
@@ -1157,14 +1383,70 @@ function AppInner() {
 
                     <div className="line-content-wrapper">
                       <div className="customer-details">
-                        <div className="detail-row">
+                        <div className="detail-row" style={{ position: 'relative' }}>
                           <div className="icon-wrapper blue"><User size={20} /></div>
-                          <div className="detail-content">
-                            <span className="detail-label">{t('customerName')}</span>
-                            <span className="detail-value" style={{ 
-                              opacity: line.name === 'Veri Bekleniyor' ? 0.4 : 1 
-                            }}>{line.name === 'Veri Bekleniyor' ? t('waitingData') : line.name}</span>
+                          <div className="detail-content" style={{ position: 'relative', width: '100%', paddingRight: '12px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span className="detail-label">{t('customerName')}</span>
+                              <span className="detail-value" style={{ 
+                                opacity: line.name === 'Veri Bekleniyor' ? 0.4 : 1,
+                                display: 'flex', alignItems: 'center', gap: '8px'
+                              }}>
+                                {line.name === 'Veri Bekleniyor' ? t('waitingData') : line.name}
+                                {line.results && line.results.length > 1 && (
+                                   <span style={{ color: '#3b82f6', fontSize: '16px', fontWeight: '800', marginLeft: '8px' }}>
+                                     ({line.results.length})
+                                   </span>
+                                )}
+                              </span>
+                            </div>
+
+                            {line.results && line.results.length > 1 && (
+                              <div 
+                                className="box4-dropdown-trigger"
+                                style={{ 
+                                  position: 'absolute', 
+                                  right: '0', 
+                                  top: '50%', 
+                                  transform: 'translateY(-50%)',
+                                  zIndex: 10
+                                }}
+                                onClick={() => setOpenLineDropdownId(openLineDropdownId === line.id ? null : line.id)}
+                              >
+                                <ChevronDown size={22} className={openLineDropdownId === line.id ? 'open' : ''} />
+                              </div>
+                            )}
                           </div>
+
+                          {openLineDropdownId === line.id && line.results && line.results.length > 1 && (
+                            <div className="box4-dropdown-menu">
+                              {line.results.map((result, idx) => (
+                                <div 
+                                  key={idx} 
+                                  className="box4-dropdown-item"
+                                  onClick={() => {
+                                    setLines(prev => prev.map(l => l.id === line.id ? {
+                                      ...l,
+                                      name: result.name,
+                                      address: result.address,
+                                      phone: result.phone,
+                                      customerId: result.id
+                                    } : l));
+                                    setCallHistory(prev => prev.map(c => 
+                                      (c.phone === line.phone && c.line === `HAT ${line.id}`) ? { ...c, name: result.name, address: result.address } : c
+                                    ));
+                                    setOpenLineDropdownId(null);
+                                  }}
+                                >
+                                  <div className="box4-dropdown-item-name">{result.name}</div>
+                                  <div className="box4-dropdown-item-phone">{result.phone}</div>
+                                  {result.address && result.address !== 'Bilinmiyor' && result.address !== 'Veri Bekleniyor' && (
+                                    <div className="box4-dropdown-item-address">{result.address}</div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
 
                         <div className="detail-row">
@@ -1303,7 +1585,11 @@ function AppInner() {
               <div className="col-line">{t('colLine')}</div>
             </div>
 
-            <div className="calls-container">
+            <div 
+              className="calls-container"
+              ref={callListScrollRef}
+              onScroll={handleCallListScroll}
+            >
               {filteredHistory.length > 0 ? (
                 filteredHistory.map((call, index) => {
                   // Aynı güne ait tüm çağrıları bul (Gösterim sırasına göre Yeniden Eskiye)
@@ -1346,6 +1632,106 @@ function AppInner() {
 
         </div>
       </main>
+
+      {/* ── GÜNCELLEME TOAST BİLDİRİMİ ── */}
+      {autoUpdateInfo && (
+        <div style={{
+          position: 'fixed',
+          bottom: '24px',
+          right: '24px',
+          zIndex: 99998,
+          width: '320px',
+          background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
+          border: '1px solid rgba(99,102,241,0.35)',
+          borderRadius: '16px',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(99,102,241,0.15)',
+          padding: '18px 20px',
+          animation: 'toastSlideIn 0.4s cubic-bezier(0.34,1.56,0.64,1)',
+          fontFamily: 'Inter, system-ui, sans-serif',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+            <div style={{
+              width: '36px', height: '36px', borderRadius: '10px', flexShrink: 0,
+              background: 'rgba(99,102,241,0.18)', border: '1.5px solid rgba(99,102,241,0.4)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center'
+            }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="16 16 12 12 8 16" /><line x1="12" y1="12" x2="12" y2="21" />
+                <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+              </svg>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '13px', fontWeight: '700', color: '#e2e8f0', lineHeight: 1.3 }}>
+                Güncelleme Mevcut
+              </div>
+              <div style={{ fontSize: '11px', color: '#64748b', marginTop: '1px' }}>
+                {autoUpdateInfo.currentVersion} → <span style={{ color: '#818cf8', fontWeight: '600' }}>{autoUpdateInfo.latestVersion}</span>
+              </div>
+            </div>
+            {downloadProgress < 0 && (
+              <button
+                onClick={() => setAutoUpdateInfo(null)}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: '#475569', padding: '2px', borderRadius: '6px',
+                  display: 'flex', alignItems: 'center', transition: 'color 0.2s'
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = '#94a3b8'}
+                onMouseLeave={e => e.currentTarget.style.color = '#475569'}
+                title="Kapat"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            )}
+          </div>
+
+          {downloadProgress >= 0 && downloadProgress <= 100 && (
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
+                <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: '500' }}>
+                  {downloadProgress < 100 ? 'İndiriliyor...' : 'Kurulum başlatılıyor...'}
+                </span>
+                <span style={{ fontSize: '11px', color: '#818cf8', fontWeight: '700' }}>
+                  {downloadProgress}%
+                </span>
+              </div>
+              <div style={{ width: '100%', height: '6px', borderRadius: '999px', background: 'rgba(99,102,241,0.15)', overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', width: `${downloadProgress}%`, borderRadius: '999px',
+                  background: 'linear-gradient(90deg, #6366f1, #818cf8)',
+                  transition: 'width 0.3s ease', boxShadow: '0 0 8px rgba(99,102,241,0.6)'
+                }} />
+              </div>
+            </div>
+          )}
+
+          {downloadProgress < 0 && (
+            <button
+              onClick={async () => {
+                setDownloadProgress(0);
+                if (window.electronAPI?.downloadAndInstallUpdate) {
+                  await window.electronAPI.downloadAndInstallUpdate();
+                }
+              }}
+              style={{
+                width: '100%', padding: '9px 0',
+                background: 'linear-gradient(135deg, #4f46e5, #6366f1)',
+                border: 'none', borderRadius: '10px', color: '#fff',
+                fontSize: '13px', fontWeight: '700', cursor: 'pointer',
+                letterSpacing: '0.3px', transition: 'filter 0.2s, transform 0.15s',
+                boxShadow: '0 4px 14px rgba(99,102,241,0.4)'
+              }}
+              onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.15)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+              onMouseLeave={e => { e.currentTarget.style.filter = 'brightness(1)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+            >
+              ⬇ Güncelle
+            </button>
+          )}
+        </div>
+      )}
+
     </div>
   );
 }

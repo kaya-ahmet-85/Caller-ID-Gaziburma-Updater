@@ -3,5 +3,6 @@ REM Caller ID Programini Baslatma Kısayolu
 echo Siparis Takip (Caller ID) Sistemi Baslatiliyor...
 echo.
 cd /d "%~dp0"
+SET DEV_MODE=true
 npm run dev:electron
 pause

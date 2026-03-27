@@ -2,7 +2,7 @@
   "name": "caller-id-gaziburma",
   "productName": "Caller ID Gaziburma",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.2.8",
   "type": "module",
   "main": "src-electron/index.js",
   "scripts": {
@@ -26,7 +26,8 @@
       "src-electron/**/*",
       "electron/**/*",
       "node_modules/**/*",
-      "package.json"
+      "package.json",
+      "Gaziburma*.png"
     ],
     "extraResources": [
       {
@@ -36,24 +37,29 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "public/gaziburma-logo.png"
+      "icon": "public/gaziburma-logo.png",
+      "forceCodeSigning": false,
+      "verifyUpdateCodeSignature": false,
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerLanguages": ["tr_TR"],
+      "installerLanguages": [
+        "tr_TR"
+      ],
       "language": "1055"
     },
     "publish": {
       "provider": "github",
       "owner": "kaya-ahmet-85",
       "repo": "Caller-ID-Gaziburma-Updater",
-      "private": true
+      "private": true,
+      "releaseType": "release"
     }
   },
   "dependencies": {
     "lucide-react": "^0.577.0",
-    "node-hid": "^3.3.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

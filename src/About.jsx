@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Tag, ShieldCheck, Phone } from 'lucide-react';
 import './About.css';
+import gaziburmaLogo from '../public/gaziburma-logo.png';
 
 export default function About() {
   const [versionInfo, setVersionInfo] = useState({ version: 'V1.0.0', date: '...' });
@@ -48,7 +49,7 @@ export default function About() {
         {/* Logo */}
         <div className="about-logo-wrap">
           <img
-            src="/src/assets/logo.png"
+            src={gaziburmaLogo}
             alt="Gaziburma Mustafa"
             className="about-logo"
             draggable={false}

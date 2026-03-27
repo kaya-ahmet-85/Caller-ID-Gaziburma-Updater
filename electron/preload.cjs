@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPrinters: () => ipcRenderer.invoke('get-printers'),
   savePrinterSelection: (printerName) => ipcRenderer.invoke('save-printer-selection', printerName),
   getPrinterSelection: () => ipcRenderer.invoke('get-printer-selection'),
+  getPrinterStatus: (printerName) => ipcRenderer.invoke('get-printer-status', printerName),
   printCustomerInfo: (data) => ipcRenderer.invoke('print-customer-info', data),
   printTestPage: (printerName) => ipcRenderer.invoke('print-test-page', printerName),
 
@@ -82,6 +83,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (event, theme) => callback(theme);
     ipcRenderer.on('theme-updated', listener);
     return () => ipcRenderer.removeListener('theme-updated', listener);
+  },
+
+  // Ölçek Ayarları (Scale Settings)
+  getScaleSettings: () => ipcRenderer.invoke('get-scale-settings'),
+  saveScaleSettings: (settings) => ipcRenderer.invoke('save-scale-settings', settings),
+  onScaleSettingsUpdated: (callback) => {
+    const listener = (event, settings) => callback(settings);
+    ipcRenderer.on('scale-settings-updated', listener);
+    return () => ipcRenderer.removeListener('scale-settings-updated', listener);
   },
 
   // Parola Yönetimi
@@ -112,4 +122,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Lisans Aktivasyonu
   activateLicense: (key) => ipcRenderer.invoke('activate-license', key),
   licenseSuccess: () => ipcRenderer.send('license-success'),
+
+  // Bize Yazın — Telegram Bot
+  sendTelegramMessage: (data) => ipcRenderer.invoke('send-telegram-message', data),
+  openContactForm: () => ipcRenderer.send('open-contact-form'),
+
+  // Otomatik Güncelleme Bildirimi
+  onAutoUpdateAvailable: (cb) => {
+    const handler = (_, info) => cb(info);
+    ipcRenderer.on('auto-update-available', handler);
+    return () => ipcRenderer.removeListener('auto-update-available', handler);
+  },
+
+  // İndirme & Kurulum — kullanıcı onay verince exe indirilir, ardından app kapanır ve installer başlar
+  downloadAndInstallUpdate: () => ipcRenderer.invoke('download-and-install-update'),
+
+  // İndirme ilerlemesi (0-100)
+  onDownloadProgress: (cb) => {
+    const handler = (_, pct) => cb(pct);
+    ipcRenderer.on('download-progress', handler);
+    return () => ipcRenderer.removeListener('download-progress', handler);
+  },
 });

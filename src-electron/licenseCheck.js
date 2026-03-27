@@ -28,30 +28,17 @@ const httpsRequest = (options, body = null) => new Promise((resolve, reject) => 
   req.end();
 });
 
-// ── Firestore REST: licenses koleksiyonunu sorgula ──────────────────────────
-const queryLicense = async (licenseKey) => {
-  const url = `/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents:runQuery`;
-
-  const queryBody = {
-    structuredQuery: {
-      from: [{ collectionId: 'licenses' }],
-      where: {
-        fieldFilter: {
-          field:  { fieldPath: 'licenseKey' },
-          op:     'EQUAL',
-          value:  { stringValue: licenseKey }
-        }
-      },
-      limit: 1
-    }
-  };
+// ── Firestore REST: licenses koleksiyonundan dokümanı ID ile getir ───────────
+// Artık licenseKey field'ı aranmaz; girilən key doğrudan Document ID'sidir.
+const getLicenseDoc = async (licenseKey) => {
+  const docPath = `/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents/licenses/${encodeURIComponent(licenseKey)}`;
 
   return httpsRequest({
-    hostname: `firestore.googleapis.com`,
-    path: `${url}?key=${FIREBASE_API_KEY}`,
-    method: 'POST',
+    hostname: 'firestore.googleapis.com',
+    path: `${docPath}?key=${FIREBASE_API_KEY}`,
+    method: 'GET',
     headers: { 'Content-Type': 'application/json' }
-  }, queryBody);
+  });
 };
 
 // ── Firestore REST: document güncelle (deviceId yaz) ────────────────────────
@@ -98,22 +85,20 @@ const verifyLicense = async (licenseKey) => {
   const deviceId = getDeviceId();
 
   try {
-    const res = await queryLicense(key);
+    const res = await getLicenseDoc(key);
 
-    if (!res.body || !Array.isArray(res.body)) {
-      throw new Error(`Beklenmeyen yanıt: ${JSON.stringify(res.body)}`);
-    }
-
-    // Sonuç boşsa kayıt yok
-    const hit = res.body.find(r => r.document);
-    if (!hit) {
+    // 404 → belgé yok
+    if (res.status === 404) {
       return { valid: false, message: 'Lisans anahtarı bulunamadı.' };
     }
+    if (res.status !== 200 || !res.body?.fields) {
+      throw new Error(`Beklenmeyen yanıt (${res.status}): ${JSON.stringify(res.body)}`);
+    }
 
-    const fields = hit.document.fields || {};
+    const fields  = res.body.fields || {};
     const active  = fields.active?.booleanValue;
     const docDev  = fields.deviceId?.stringValue || '';
-    const docPath = hit.document.name; // projects/.../documents/licenses/xxx
+    const docPath = res.body.name; // projects/.../documents/licenses/xxx
 
     if (!active) {
       return { valid: false, message: 'Bu lisans devre dışı bırakılmış.' };

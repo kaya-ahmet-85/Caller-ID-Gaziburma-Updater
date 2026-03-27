@@ -6,6 +6,7 @@ import Settings from './Settings.jsx'
 import Help from './Help.jsx'
 import About from './About.jsx'
 import SplashScreen from './SplashScreen.jsx'
+import ContactForm from './ContactForm.jsx'
 import { LanguageProvider } from './LanguageContext.jsx'
 
 // Ana uygulama — açılış ekranını sarmalamak için wrapper
@@ -43,6 +44,12 @@ const renderApp = () => {
     root.render(
       <StrictMode>
         <About />
+      </StrictMode>
+    );
+  } else if (window.location.hash === '#/contact') {
+    root.render(
+      <StrictMode>
+        <ContactForm />
       </StrictMode>
     );
   } else {

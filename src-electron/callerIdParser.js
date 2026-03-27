@@ -54,9 +54,16 @@ class CallerIdParser extends EventEmitter {
         this.debug(`[Sync] Başarılı: ${syncInfo.count} kayıt hafızaya alındı.`);
         this.emit('sync-status', syncInfo);
         this.isInitialSyncDone = true;
+        // Flag set edildikten SONRA tekrar emit et: mevcut hatlardaki
+        // "Sorgulanıyor..." kayıtları artık doğru şekilde çözülecek.
+        this.emit('global-data-updated');
     } catch (err) {
         this.debug(`[Sync] Hata: ${err.message}`);
         this.emit('sync-status', { status: 'error', message: err.message });
+        // Başarısız olsa bile flag'i true yap; böylece sonraki çağrılar
+        // "Sorgulanıyor..." yerine "Bilinmiyor" gösterir.
+        this.isInitialSyncDone = true;
+        this.emit('global-data-updated');
     }
 
     // Periyodik güncelleme başlat
@@ -86,9 +93,12 @@ class CallerIdParser extends EventEmitter {
         this.debug(`[Sync] Güncellendi: ${syncInfo.count} kayıt.`);
         this.emit('sync-status', syncInfo);
         this.isInitialSyncDone = true;
+        this.emit('global-data-updated');
     } catch (err) {
         this.debug(`[Sync] Güncelleme hatası: ${err.message}`);
         this.emit('sync-status', { status: 'error', message: err.message });
+        this.isInitialSyncDone = true;
+        this.emit('global-data-updated');
     }
   }
 
@@ -155,7 +165,7 @@ class CallerIdParser extends EventEmitter {
         return null;
     }
 
-    const customer = this.customerData.find(m => {
+    const customers = this.customerData.filter(m => {
       const rawMusteriPhone = m.telefon_numarasi || '';
       const parts = rawMusteriPhone.split(/[,\/;\-\s]+/);
       
@@ -169,13 +179,20 @@ class CallerIdParser extends EventEmitter {
       });
     });
 
-    if (customer) {
-      this.debug(`[Lookup] BULUNDU: ${customer.musteri_bilgisi}`);
+    if (customers.length > 0) {
+      this.debug(`[Lookup] BULUNDU: ${customers.length} eşleşme`);
+      const first = customers[0];
       return {
-        id: customer.id || customer.musteri_id || null,
-        name: customer.musteri_bilgisi,
-        address: customer.acik_adres,
-        phone: customer.telefon_numarasi
+        id: first.id || first.musteri_id || null,
+        name: first.musteri_bilgisi,
+        address: first.acik_adres,
+        phone: first.telefon_numarasi,
+        results: customers.map(c => ({
+          id: c.id || c.musteri_id || null,
+          name: c.musteri_bilgisi,
+          phone: c.telefon_numarasi,
+          address: c.acik_adres
+        }))
       };
     }
 
@@ -201,7 +218,14 @@ class CallerIdParser extends EventEmitter {
       }
 
       if (data.event === 'CALL') {
-        const lineId = parseInt(data.line);
+        // Port → Mantıksal Hat eşleştirmesi
+        // Hat 1 = Port 1, Hat 2 = Port 3, Hat 3 = Port 4
+        const PORT_TO_LINE = { 1: 1, 3: 2, 4: 3 };
+        const lineId = PORT_TO_LINE[parseInt(data.line)];
+        if (!lineId) {
+          this.debug(`Port ${data.line} eşleşmedi, yoksayılıyor.`);
+          return;
+        }
         const phone = data.phone ? data.phone.trim() : 'Bilinmiyor';
         const time = data.time || new Date().toLocaleTimeString('tr-TR');
         const now = Date.now();
@@ -234,6 +258,8 @@ class CallerIdParser extends EventEmitter {
           status: 'ARANIYOR',
           name: customerInfo ? customerInfo.name : (this.isInitialSyncDone ? 'Bilinmiyor' : 'Sorgulanıyor...'),
           address: customerInfo ? customerInfo.address : (this.isInitialSyncDone ? 'Bilinmiyor' : 'Sorgulanıyor...'),
+          customerId: customerInfo ? customerInfo.id : null,
+          results: customerInfo ? customerInfo.results : [],
           isIncoming: true
         };
 
@@ -241,7 +267,10 @@ class CallerIdParser extends EventEmitter {
       }
 
       if (data.event === 'SIGNAL') {
-        const lineId = parseInt(data.line);
+        // Port → Mantıksal Hat eşleştirmesi (CALL ile aynı tablo)
+        const PORT_TO_LINE = { 1: 1, 3: 2, 4: 3 };
+        const lineId = PORT_TO_LINE[parseInt(data.line)];
+        if (!lineId) return; // Eşleşmeyen portları yoksay
         const line = this.lines[lineId];
         const now = Date.now();
         
@@ -335,6 +364,8 @@ class CallerIdParser extends EventEmitter {
         status: 'GUNCELLE', // 'ARANIYOR' yerine 'GUNCELLE' kullanarak animasyonu tetiklemiyoruz
         name: customerInfo ? customerInfo.name : 'Bilinmiyor',
         address: customerInfo ? customerInfo.address : 'Bilinmiyor',
+        customerId: customerInfo ? customerInfo.id : null,
+        results: customerInfo ? customerInfo.results : [],
         isIncoming: true
       };
 

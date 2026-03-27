@@ -23,6 +23,47 @@ import { useLanguage } from './LanguageContext.jsx';
 const Settings = () => {
   const { lang, setLang, t } = useLanguage();
   const [activeTab, setActiveTab] = useState('hat');
+  const [screenTab, setScreenTab] = useState('tema'); // 'tema' veya 'olcek'
+
+  // Ölçek Ayarları state'i
+  const [scaleSettings, setScaleSettings] = useState({
+    hatBoxes: { width: '', height: '' },
+    sidebar: { width: '290', height: '' },
+    callList: { width: '320', height: '' }
+  });
+  const [scaleSaveSuccess, setScaleSaveSuccess] = useState(false);
+
+  // Ölçek ayarlarını yükle
+  useEffect(() => {
+    if (window.electronAPI?.getScaleSettings) {
+      window.electronAPI.getScaleSettings().then(settings => {
+        if (settings) {
+          setScaleSettings(prev => ({ ...prev, ...settings }));
+        }
+      });
+    }
+  }, []);
+
+  const handleSaveScaleSettings = async () => {
+    if (!window.electronAPI?.saveScaleSettings) return;
+    const result = await window.electronAPI.saveScaleSettings(scaleSettings);
+    if (result.success) {
+      setScaleSaveSuccess(true);
+      setTimeout(() => setScaleSaveSuccess(false), 3000);
+    }
+  };
+
+  const updateScale = (section, field, value) => {
+    // Sadece sayı girilmesini sağlayalım (görünümü bozmamak için)
+    const numericValue = value.replace(/[^0-9]/g, '');
+    setScaleSettings(prev => ({
+      ...prev,
+      [section]: {
+        ...prev[section],
+        [field]: numericValue
+      }
+    }));
+  };
 
   // Yazıcı state'leri
   const [printers, setPrinters] = useState([]);
@@ -55,16 +96,30 @@ const Settings = () => {
   const [updateStatus, setUpdateStatus] = useState('idle');
   const [updateInfo, setUpdateInfo] = useState(null); // { latestVersion, currentVersion, url }
 
+  // Update modal state
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+
   const handleCheckForUpdates = async () => {
+    setShowUpdateModal(true);
     setUpdateStatus('checking');
     setUpdateInfo(null);
     try {
-      // TODO: GitHub bağlantısı kurulduğunda window.electronAPI.checkForUpdates() aktif edilecek
-      // const result = await window.electronAPI.checkForUpdates();
-      // Şimdilik simüle ediyoruz (placeholder)
-      await new Promise(r => setTimeout(r, 1500));
-      // GitHub bağlantısı kurulana kadar placeholder mesaj
-      setUpdateStatus('github-pending');
+      const result = await window.electronAPI?.checkForUpdates?.();
+      if (!result) {
+        setUpdateStatus('error');
+        setUpdateInfo({ error: 'Sunucuya bağlanılamadı.' });
+        return;
+      }
+      if (result.updateAvailable) {
+        setUpdateStatus('update-available');
+        setUpdateInfo({ latestVersion: result.latestVersion, currentVersion: result.currentVersion, releaseNotes: result.releaseNotes || '', url: result.url });
+      } else if (result.message?.includes('güncel') || result.upToDate || result.currentVersion) {
+        setUpdateStatus('up-to-date');
+        setUpdateInfo({ currentVersion: result.currentVersion });
+      } else {
+        setUpdateStatus('up-to-date');
+        setUpdateInfo(null);
+      }
     } catch (err) {
       setUpdateStatus('error');
       setUpdateInfo({ error: err.message });
@@ -497,44 +552,142 @@ const Settings = () => {
       case 'ekran': return (
         <div className="printer-section">
           <h3>{t('screenSettingsTitle')}</h3>
-          <p className="printer-section-desc">{t('languageDesc').replace('arayüz','görünüm tema')}</p>
-          <div style={{ display: 'flex', gap: '20px', marginTop: '8px' }}>
-            {[
-              { id: 'light', label: t('lightMode'), desc: t('lightModeDesc'), icon: '☀️' },
-              { id: 'dark',  label: t('darkMode'),  desc: t('darkModeDesc'),  icon: '🌙' }
-            ].map(opt => (
-              <div
-                key={opt.id}
-                onClick={() => handleThemeSelect(opt.id)}
-                style={{
-                  flex: 1, padding: '20px', border: `2px solid ${selectedTheme === opt.id ? '#38bdf8' : '#e2e8f0'}`,
-                  borderRadius: '12px', background: selectedTheme === opt.id ? '#f0f9ff' : '#ffffff',
-                  cursor: 'pointer', transition: 'all 0.2s ease',
-                  boxShadow: selectedTheme === opt.id ? '0 0 0 3px rgba(56,189,248,0.2)' : 'none'
-                }}
-              >
-                <div style={{ fontSize: '32px', marginBottom: '10px' }}>{opt.icon}</div>
-                <div style={{ fontWeight: '700', fontSize: '15px', color: '#0f172a', marginBottom: '4px' }}>{opt.label}</div>
-                <div style={{ fontSize: '13px', color: '#64748b' }}>{opt.desc}</div>
-                {selectedTheme === opt.id && (
-                  <div style={{
-                    display: 'inline-block', marginTop: '12px', padding: '3px 12px',
-                    background: '#38bdf8', color: '#0f172a', borderRadius: '20px',
-                    fontSize: '12px', fontWeight: '700'
-                  }}>{lang === 'en' ? 'Active' : 'Aktif'}</div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', marginBottom: '20px', marginTop: '10px' }}>
+            <div 
+              onClick={() => setScreenTab('tema')}
+              style={{
+                padding: '10px 20px', 
+                cursor: 'pointer',
+                fontWeight: '600',
+                color: screenTab === 'tema' ? '#0ea5e9' : '#64748b',
+                borderBottom: screenTab === 'tema' ? '2px solid #0ea5e9' : '2px solid transparent',
+                transition: 'all 0.2s',
+                userSelect: 'none'
+              }}
+            >
+              Tema
+            </div>
+            <div 
+              onClick={() => setScreenTab('olcek')}
+              style={{
+                padding: '10px 20px', 
+                cursor: 'pointer',
+                fontWeight: '600',
+                color: screenTab === 'olcek' ? '#0ea5e9' : '#64748b',
+                borderBottom: screenTab === 'olcek' ? '2px solid #0ea5e9' : '2px solid transparent',
+                transition: 'all 0.2s',
+                userSelect: 'none'
+              }}
+            >
+              Ölçek
+            </div>
+          </div>
+
+          {screenTab === 'tema' && (
+            <>
+              <div style={{ display: 'flex', gap: '20px', marginTop: '8px' }}>
+                {[
+                  { id: 'light', label: t('lightMode'), desc: t('lightModeDesc'), icon: '☀️' },
+                  { id: 'dark',  label: t('darkMode'),  desc: t('darkModeDesc'),  icon: '🌙' }
+                ].map(opt => (
+                  <div
+                    key={opt.id}
+                    onClick={() => handleThemeSelect(opt.id)}
+                    style={{
+                      flex: 1, padding: '20px', border: `2px solid ${selectedTheme === opt.id ? '#38bdf8' : '#e2e8f0'}`,
+                      borderRadius: '12px', background: selectedTheme === opt.id ? '#f0f9ff' : '#ffffff',
+                      cursor: 'pointer', transition: 'all 0.2s ease',
+                      boxShadow: selectedTheme === opt.id ? '0 0 0 3px rgba(56,189,248,0.2)' : 'none'
+                    }}
+                  >
+                    <div style={{ fontSize: '32px', marginBottom: '10px' }}>{opt.icon}</div>
+                    <div style={{ fontWeight: '700', fontSize: '15px', color: '#0f172a', marginBottom: '4px' }}>{opt.label}</div>
+                    <div style={{ fontSize: '13px', color: '#64748b' }}>{opt.desc}</div>
+                    {selectedTheme === opt.id && (
+                      <div style={{
+                        display: 'inline-block', marginTop: '12px', padding: '3px 12px',
+                        background: '#38bdf8', color: '#0f172a', borderRadius: '20px',
+                        fontSize: '12px', fontWeight: '700'
+                      }}>{lang === 'en' ? 'Active' : 'Aktif'}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="printer-actions" style={{ marginTop: '28px' }}>
+                {themeSaveSuccess && (
+                  <div className="printer-save-success">
+                    <CheckCircle size={18} />
+                    <span>{t('themeSaved')}</span>
+                  </div>
                 )}
+                <button className="printer-save-btn" onClick={handleSaveTheme}>{t('save')}</button>
               </div>
-            ))}
-          </div>
-          <div className="printer-actions" style={{ marginTop: '28px' }}>
-            {themeSaveSuccess && (
-              <div className="printer-save-success">
-                <CheckCircle size={18} />
-                <span>{t('themeSaved')}</span>
+            </>
+          )}
+
+          {screenTab === 'olcek' && (
+            <div style={{ padding: '20px 0', color: '#64748b', fontSize: '14px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(200px, 1fr) minmax(200px, 1fr) minmax(200px, 1fr)', gap: '20px', alignItems: 'start' }}>
+                
+                {/* 1. Hat 1, Hat 2, Hat 3 ve 4. Kutu */}
+                <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                  <h4 style={{ margin: '0 0 16px', fontSize: '14px', color: '#0f172a' }}>Hat 1, Hat 2, Hat 3 ve 4. Kutu</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div>
+                      <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '6px' }}>Yatay Ölçü (px)</label>
+                      <input type="text" value={scaleSettings.hatBoxes.width} onChange={e => updateScale('hatBoxes', 'width', e.target.value)} placeholder="Oto" style={{ width: '100%', padding: '8px 12px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box' }} onFocus={e => e.target.style.borderColor = '#38bdf8'} onBlur={e => e.target.style.borderColor = '#e2e8f0'} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '6px' }}>Dikey Ölçü (px)</label>
+                      <input type="text" value={scaleSettings.hatBoxes.height} onChange={e => updateScale('hatBoxes', 'height', e.target.value)} placeholder="Oto" style={{ width: '100%', padding: '8px 12px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box' }} onFocus={e => e.target.style.borderColor = '#38bdf8'} onBlur={e => e.target.style.borderColor = '#e2e8f0'} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Ekran Sol Menü */}
+                <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                  <h4 style={{ margin: '0 0 16px', fontSize: '14px', color: '#0f172a' }}>Ekran Sol Menü</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div>
+                      <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '6px' }}>Yatay Ölçü (px)</label>
+                      <input type="text" value={scaleSettings.sidebar.width} onChange={e => updateScale('sidebar', 'width', e.target.value)} placeholder="290" style={{ width: '100%', padding: '8px 12px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box' }} onFocus={e => e.target.style.borderColor = '#38bdf8'} onBlur={e => e.target.style.borderColor = '#e2e8f0'} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '6px' }}>Dikey Ölçü (px)</label>
+                      <input type="text" value={scaleSettings.sidebar.height} onChange={e => updateScale('sidebar', 'height', e.target.value)} placeholder="Oto" style={{ width: '100%', padding: '8px 12px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box' }} onFocus={e => e.target.style.borderColor = '#38bdf8'} onBlur={e => e.target.style.borderColor = '#e2e8f0'} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Çağrı Listesi */}
+                <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                  <h4 style={{ margin: '0 0 16px', fontSize: '14px', color: '#0f172a' }}>Çağrı Listesi</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div>
+                      <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '6px' }}>Yatay Ölçü (px)</label>
+                      <input type="text" value={scaleSettings.callList.width} onChange={e => updateScale('callList', 'width', e.target.value)} placeholder="320" style={{ width: '100%', padding: '8px 12px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box' }} onFocus={e => e.target.style.borderColor = '#38bdf8'} onBlur={e => e.target.style.borderColor = '#e2e8f0'} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '12px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '6px' }}>Dikey Ölçü (px)</label>
+                      <input type="text" value={scaleSettings.callList.height} onChange={e => updateScale('callList', 'height', e.target.value)} placeholder="Oto" style={{ width: '100%', padding: '8px 12px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box' }} onFocus={e => e.target.style.borderColor = '#38bdf8'} onBlur={e => e.target.style.borderColor = '#e2e8f0'} />
+                    </div>
+                  </div>
+                </div>
+
               </div>
-            )}
-            <button className="printer-save-btn" onClick={handleSaveTheme}>{t('save')}</button>
-          </div>
+
+              {/* Kaydet Butonu */}
+              <div className="printer-actions" style={{ marginTop: '28px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '16px' }}>
+                {scaleSaveSuccess && (
+                  <div className="printer-save-success" style={{ margin: 0 }}>
+                    <CheckCircle size={18} color="#16a34a" />
+                    <span style={{ color: '#16a34a', fontWeight: '600' }}>Ölçek ayarları kaydedildi!</span>
+                  </div>
+                )}
+                <button className="printer-save-btn" onClick={handleSaveScaleSettings}>{t('save')}</button>
+              </div>
+            </div>
+          )}
         </div>
       );
       case 'yazici': return (
@@ -775,88 +928,166 @@ const Settings = () => {
             Programın en güncel sürümde olup olmadığını GitHub üzerinden kontrol edebilirsiniz.
           </p>
 
-          {/* Durum kutusu */}
+          {/* Statik bilgi kutusu */}
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center',
-            gap: '20px', marginTop: '32px', maxWidth: '400px', margin: '32px auto 0'
+            gap: '20px', marginTop: '48px'
           }}>
-
-            {/* İkon ve durum mesajı */}
-            <div style={{ textAlign: 'center' }}>
-              {updateStatus === 'idle' && (
-                <>
-                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>🔄</div>
-                  <p style={{ fontSize: '14px', color: '#94a3b8' }}>Güncel sürüm kontrolü için butona tıklayın.</p>
-                </>
-              )}
-              {updateStatus === 'checking' && (
-                <>
-                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>
-                    <Loader2 size={48} className="spinner" style={{ color: '#38bdf8' }} />
-                  </div>
-                  <p style={{ fontSize: '14px', color: '#38bdf8', fontWeight: '600' }}>GitHub sorgulanıyor...</p>
-                </>
-              )}
-              {updateStatus === 'github-pending' && (
-                <>
-                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>⚙️</div>
-                  <p style={{ fontSize: '14px', color: '#f59e0b', fontWeight: '600' }}>GitHub bağlantısı henüz yapılandırılmadı.</p>
-                  <p style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px' }}>Bu özellik GitHub deposu bağlandığında aktif olacak.</p>
-                </>
-              )}
-              {updateStatus === 'up-to-date' && (
-                <>
-                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>✅</div>
-                  <p style={{ fontSize: '15px', color: '#16a34a', fontWeight: '700' }}>Program güncel!</p>
-                  {updateInfo && <p style={{ fontSize: '13px', color: '#64748b', marginTop: '4px' }}>Mevcut sürüm: {updateInfo.currentVersion}</p>}
-                </>
-              )}
-              {updateStatus === 'update-available' && (
-                <>
-                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>🆕</div>
-                  <p style={{ fontSize: '15px', color: '#0ea5e9', fontWeight: '700' }}>Yeni sürüm mevcut: {updateInfo?.latestVersion}</p>
-                  <p style={{ fontSize: '13px', color: '#64748b', marginTop: '4px' }}>Güncellemeyi indirmek için aşağıdaki butona tıklayın.</p>
-                </>
-              )}
-              {updateStatus === 'error' && (
-                <>
-                  <div style={{ fontSize: '52px', marginBottom: '12px' }}>❌</div>
-                  <p style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>Bağlantı hatası.</p>
-                  <p style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>{updateInfo?.error}</p>
-                </>
-              )}
-            </div>
-
-            {/* Butonlar */}
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <button
-                className="printer-save-btn"
-                onClick={handleCheckForUpdates}
-                disabled={updateStatus === 'checking'}
-                style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '200px', justifyContent: 'center' }}
-              >
-                {updateStatus === 'checking'
-                  ? <><Loader2 size={16} className="spinner" /> Kontrol ediliyor...</>
-                  : <><RefreshCw size={16} /> Güncellemeleri Kontrol Et</>
-                }
-              </button>
-
-              {/* Güncelleme butonu — yeni sürüm varsa görünür */}
-              {updateStatus === 'update-available' && updateInfo?.url && (
-                <button
-                  onClick={() => window.electronAPI?.openExternal?.(updateInfo.url)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: '8px',
-                    padding: '10px 20px', background: 'linear-gradient(135deg,#0ea5e9,#0284c7)',
-                    border: 'none', borderRadius: '8px', color: '#fff',
-                    fontWeight: '700', fontSize: '14px', cursor: 'pointer'
-                  }}
-                >
-                  ⬇ İndir
-                </button>
-              )}
-            </div>
+            <div style={{ fontSize: '64px' }}>🔄</div>
+            <p style={{ fontSize: '14px', color: '#64748b', textAlign: 'center', maxWidth: '320px', lineHeight: '1.6' }}>
+              Güncellemeleri kontrol etmek için aşağıdaki butona tıklayın.
+            </p>
+            <button
+              className="printer-save-btn"
+              onClick={handleCheckForUpdates}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '220px', justifyContent: 'center' }}
+            >
+              <RefreshCw size={16} /> Güncellemeleri Kontrol Et
+            </button>
           </div>
+
+          {/* ── Animasyonlu Güncelleme Modal ── */}
+          {showUpdateModal && (
+            <div style={{
+              position: 'fixed', inset: 0,
+              background: 'rgba(0,0,0,0.6)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              zIndex: 99999,
+              animation: 'fadeIn 0.25s ease'
+            }}>
+              <div style={{
+                background: '#fff',
+                borderRadius: '20px',
+                padding: '48px 40px',
+                width: '420px',
+                boxShadow: '0 25px 80px rgba(0,0,0,0.35)',
+                textAlign: 'center',
+                animation: 'slideUp 0.3s cubic-bezier(0.34,1.56,0.64,1)'
+              }}>
+
+                {/* CHECKING */}
+                {updateStatus === 'checking' && (
+                  <>
+                    <div style={{ marginBottom: '24px' }}>
+                      <Loader2 size={64} style={{ color: '#38bdf8', animation: 'spin 1s linear infinite' }} />
+                    </div>
+                    <h3 style={{ fontSize: '18px', fontWeight: '700', color: '#0f172a', marginBottom: '8px' }}>
+                      Güncelleme Denetleniyor...
+                    </h3>
+                    <p style={{ fontSize: '13px', color: '#94a3b8' }}>GitHub deposu sorgulanıyor, lütfen bekleyin.</p>
+                  </>
+                )}
+
+                {/* UP TO DATE */}
+                {updateStatus === 'up-to-date' && (
+                  <>
+                    <div style={{ fontSize: '72px', marginBottom: '16px', animation: 'bounceIn 0.4s ease' }}>✅</div>
+                    <h3 style={{ fontSize: '20px', fontWeight: '800', color: '#16a34a', marginBottom: '8px' }}>
+                      Yazılımınız güncel.
+                    </h3>
+                    {updateInfo?.currentVersion && (
+                      <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '24px' }}>
+                        Mevcut sürüm: <strong>{updateInfo.currentVersion}</strong>
+                      </p>
+                    )}
+                    <button
+                      onClick={() => { setShowUpdateModal(false); setUpdateStatus('idle'); }}
+                      style={{
+                        padding: '12px 36px', background: '#16a34a',
+                        border: 'none', borderRadius: '10px', color: '#fff',
+                        fontWeight: '700', fontSize: '15px', cursor: 'pointer',
+                        boxShadow: '0 4px 12px rgba(22,163,74,0.35)'
+                      }}
+                    >Tamam</button>
+                  </>
+                )}
+
+                {/* UPDATE AVAILABLE */}
+                {updateStatus === 'update-available' && (
+                  <>
+                    <div style={{ fontSize: '72px', marginBottom: '16px', animation: 'bounceIn 0.4s ease' }}>🆕</div>
+                    <h3 style={{ fontSize: '20px', fontWeight: '800', color: '#0ea5e9', marginBottom: '8px' }}>
+                      Yeni sürüm mevcut!
+                    </h3>
+                    <p style={{ fontSize: '15px', color: '#0f172a', fontWeight: '700', marginBottom: '4px' }}>
+                      v{updateInfo?.latestVersion}
+                    </p>
+                    {updateInfo?.currentVersion && (
+                      <p style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '24px' }}>
+                        Mevcut: v{updateInfo.currentVersion}
+                      </p>
+                    )}
+                    {/* Changelog / Bu Sürümde Değişenler */}
+                    {updateInfo?.releaseNotes && (
+                      <div style={{
+                        margin: '0 0 20px',
+                        textAlign: 'left',
+                        background: '#f0f9ff',
+                        border: '1px solid #bae6fd',
+                        borderRadius: '10px',
+                        padding: '12px 14px'
+                      }}>
+                        <div style={{ fontSize: '12px', fontWeight: '700', color: '#0369a1', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          📋 Bu Sürümde Değişenler
+                        </div>
+                        <div style={{
+                          fontSize: '12px', color: '#1e293b', lineHeight: '1.7',
+                          maxHeight: '110px', overflowY: 'auto',
+                          whiteSpace: 'pre-wrap', fontFamily: 'inherit'
+                        }}>
+                          {updateInfo.releaseNotes}
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+                      <button
+                        onClick={() => {
+                          if (updateInfo?.url) window.electronAPI?.openExternal?.(updateInfo.url);
+                          setShowUpdateModal(false);
+                        }}
+                        style={{
+                          padding: '12px 28px',
+                          background: 'linear-gradient(135deg,#0ea5e9,#0284c7)',
+                          border: 'none', borderRadius: '10px', color: '#fff',
+                          fontWeight: '700', fontSize: '14px', cursor: 'pointer',
+                          boxShadow: '0 4px 12px rgba(14,165,233,0.4)'
+                        }}
+                      >⬇ Şimdi Güncelle</button>
+                      <button
+                        onClick={() => { setShowUpdateModal(false); setUpdateStatus('idle'); }}
+                        style={{
+                          padding: '12px 28px', background: '#f1f5f9',
+                          border: '2px solid #e2e8f0', borderRadius: '10px',
+                          color: '#475569', fontWeight: '700', fontSize: '14px', cursor: 'pointer'
+                        }}
+                      >İptal</button>
+                    </div>
+                  </>
+                )}
+
+                {/* ERROR */}
+                {updateStatus === 'error' && (
+                  <>
+                    <div style={{ fontSize: '72px', marginBottom: '16px' }}>❌</div>
+                    <h3 style={{ fontSize: '18px', fontWeight: '700', color: '#ef4444', marginBottom: '8px' }}>
+                      Bağlantı hatası
+                    </h3>
+                    <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '24px' }}>
+                      {updateInfo?.error || 'GitHub\'a ulaşılamadı. İnternet bağlantınızı kontrol edin.'}
+                    </p>
+                    <button
+                      onClick={() => { setShowUpdateModal(false); setUpdateStatus('idle'); }}
+                      style={{
+                        padding: '12px 36px', background: '#ef4444',
+                        border: 'none', borderRadius: '10px', color: '#fff',
+                        fontWeight: '700', fontSize: '14px', cursor: 'pointer'
+                      }}
+                    >Kapat</button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       );
       case 'log': return (

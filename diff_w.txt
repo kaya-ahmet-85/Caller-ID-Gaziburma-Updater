@@ -1,0 +1,1736 @@
+﻿diff --git a/src-electron/index.js b/src-electron/index.js
+index 0cab1b4..ca5c843 100644
+--- a/src-electron/index.js
++++ b/src-electron/index.js
+@@ -1,1727 +1,3 @@
+-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+-const path = require('path');
+-const os = require('os');
+-const fs = require('fs');
+-const crypto = require('crypto');
+-const child_process = require('child_process');
+-const https = require('https');
+-
+-
+-// const HID = require('node-hid'); // Art─▒k C# Bridge kullan─▒yoruz
+-const callerIdParser = require('./callerIdParser.js').default || require('./callerIdParser.js');
+-const stateStore = require('./stateStore.js');
+-const { verifyLicense, readLocalLicense } = require('./licenseCheck.js');
+-// Vite'nin varsay─▒lan geli┼ştirme sunucusu portu
+-const isDev = process.env.NODE_ENV === 'development';
+-
+-// ====== ELECTRON-UPDATER (GitHub Auto-Update) ======
+-// Sadece ├╝retim modunda aktif ÔÇö dev modunda devre d─▒┼ş─▒ b─▒rak─▒l─▒r.
+-let autoUpdater = null;
+-if (!isDev) {
+-  try {
+-    autoUpdater = require('electron-updater').autoUpdater;
+-    autoUpdater.autoDownload = false;       // Kullan─▒c─▒ onay─▒ olmadan indirme
+-    autoUpdater.autoInstallOnAppQuit = true;
+-    autoUpdater.logger = null;
+-    // Private repo eri┼şimi i├ğin token (repo gizli oldu─şundan g├╝venli)
+-    autoUpdater.setFeedURL({
+-      provider: 'github',
+-      owner: 'kaya-ahmet-85',
+-      repo: 'Caller-ID-Gaziburma-Updater',
+-      private: true,
+-      token: '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'
+-    });
+-  } catch (e) {
+-    console.warn('[Updater] electron-updater y├╝klenemedi:', e.message);
+-  }
+-}
+-
+-// ====== RAW YAZICI DLL CACHE ======
+-// C# kodu her seferinde derlenmek yerine bir kez derlenir ve DLL olarak kaydedilir.
+-// Sonraki ├ğa─şr─▒larda sadece DLL y├╝klenir (~100ms vs ~3-5sn derleme s├╝resi).
+-let rawPrinterDllPath = null; // app.getPath('userData') app.ready sonras─▒ kullan─▒labilir
+-
+-// T├╝m PS scriptleri i├ğin ortak RawPrinterCore tan─▒m─▒n─▒ y├╝kleyen PS ba┼şl─▒─ş─▒
+-const getRawPrinterPsHeader = () => {
+-  const dllPath = rawPrinterDllPath.replace(/\\/g, '\\\\');
+-  return `
+-$dllPath = "${dllPath}"
+-$typeDef = @'
+-using System;
+-using System.Runtime.InteropServices;
+-public class RawPrinterCore {
+-    [DllImport("winspool.drv", CharSet=CharSet.Ansi)]
+-    public static extern bool OpenPrinter(string pPrinterName, out IntPtr hPrinter, IntPtr pDefault);
+-    [DllImport("winspool.drv")]
+-    public static extern bool ClosePrinter(IntPtr hPrinter);
+-    [DllImport("winspool.drv", CharSet=CharSet.Ansi)]
+-    public static extern int StartDocPrinter(IntPtr hPrinter, int Level, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOA di);
+-    [DllImport("winspool.drv")]
+-    public static extern bool EndDocPrinter(IntPtr hPrinter);
+-    [DllImport("winspool.drv")]
+-    public static extern bool StartPagePrinter(IntPtr hPrinter);
+-    [DllImport("winspool.drv")]
+-    public static extern bool EndPagePrinter(IntPtr hPrinter);
+-    [DllImport("winspool.drv")]
+-    public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
+-    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
+-    public class DOCINFOA {
+-        [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
+-        [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;
+-        [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
+-    }
+-}
+-'@
+-if (-not (Test-Path $dllPath)) {
+-    Add-Type -TypeDefinition $typeDef -OutputAssembly $dllPath -ErrorAction Stop
+-}
+-Add-Type -Path $dllPath -ErrorAction Stop
+-`;
+-};
+-
+-let mainWindow;
+-
+-function createWindow() {
+-  mainWindow = new BrowserWindow({
+-    width: 1280,
+-    height: 800,
+-    minWidth: 1024,
+-    minHeight: 768,
+-    frame: false, // ├çer├ğeveyi kald─▒r
+-    transparent: false,
+-    show: false,
+-    // ├ûnce kapal─▒ ba┼şlat─▒p sonra maximize edece─şiz
+-    webPreferences: {
+-      nodeIntegration: false,
+-      contextIsolation: true,
+-      preload: path.join(__dirname, '../electron/preload.cjs')
+-    }
+-  });
+-
+-  // ├£st men├╝ ├ğubu─şunu tamamen kald─▒r (File, Edit vb.)
+-  mainWindow.setMenu(null);
+-
+-  if (isDev) {
+-    mainWindow.loadURL('http://localhost:5173');
+-  } else {
+-    mainWindow.loadFile(path.join(__dirname, '../dist', 'index.html'));
+-  }
+-
+-  mainWindow.once('ready-to-show', () => {
+-    mainWindow.maximize(); // Tam ekran (Maximize) ba┼şlat
+-    mainWindow.show();
+-
+-    // ÔöÇÔöÇ Otomatik G├╝ncelleme Kontrol├╝ ÔöÇÔöÇ
+-    // ├£retim modunda pencere a├ğ─▒ld─▒ktan 30 saniye sonra GitHub'dan s├╝r├╝m kontrol├╝ yapar.
+-    // Yeni s├╝r├╝m varsa ana pencereye bildirim g├Ânderir (toast olarak g├Âr├╝n├╝r).
+-    if (!isDev) {
+-      setTimeout(() => {
+-        const GH_TOKEN = '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';
+-        const options = {
+-          hostname: 'api.github.com',
+-          path: '/repos/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest',
+-          method: 'GET',
+-          headers: {
+-            'Authorization': 'token ' + GH_TOKEN,
+-            'User-Agent': 'CallerIDApp',
+-            'Accept': 'application/vnd.github.v3+json'
+-          }
+-        };
+-        const req = https.request(options, (res) => {
+-          let data = '';
+-          res.on('data', (chunk) => { data += chunk; });
+-          res.on('end', () => {
+-            try {
+-              const release = JSON.parse(data);
+-              const latestTag = release.tag_name; // ├Ârn: "v1.2.8"
+-              if (!latestTag) return;
+-              const latestVersion = latestTag.replace(/^v/i, ''); // "1.2.8"
+-              const currentVersion = app.getVersion();            // "1.2.7"
+-
+-              // Semver kar┼ş─▒la┼şt─▒rmas─▒: sadece GER├çEKTEN daha yeni bir s├╝r├╝m varsa bildir
+-              const isNewer = (latest, current) => {
+-                const a = latest.split('.').map(Number);
+-                const b = current.split('.').map(Number);
+-                for (let i = 0; i < 3; i++) {
+-                  if ((a[i] || 0) > (b[i] || 0)) return true;
+-                  if ((a[i] || 0) < (b[i] || 0)) return false;
+-                }
+-                return false;
+-              };
+-
+-              if (isNewer(latestVersion, currentVersion)) {
+-                console.log(`[AutoUpdate] Yeni s├╝r├╝m bulundu: ${latestVersion} (mevcut: ${currentVersion})`);
+-                if (mainWindow && !mainWindow.isDestroyed()) {
+-                  mainWindow.webContents.send('auto-update-available', {
+-                    latestVersion: `v${latestVersion}`,
+-                    currentVersion: `v${currentVersion}`,
+-                    releaseNotes: release.body || '',
+-                    url: release.html_url || 'https://github.com/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest',
+-                    updateAvailable: true
+-                  });
+-                }
+-              } else {
+-                console.log('[AutoUpdate] G├╝ncel s├╝r├╝m kullan─▒mda:', currentVersion);
+-              }
+-            } catch (parseErr) {
+-              console.log('[AutoUpdate] JSON parse hatas─▒:', parseErr.message);
+-            }
+-          });
+-        });
+-        req.on('error', (e) => {
+-          console.log('[AutoUpdate] Ba─şlant─▒ hatas─▒:', e.message);
+-        });
+-        req.end();
+-      }, 30000); // 30 saniye bekle
+-    }
+-  });
+-
+-  mainWindow.on('closed', () => {
+-    mainWindow = null;
+-  });
+-}
+-
+-// ====== MODAL PENCERE YARDIMCI FONKS─░YONU ======
+-// ─░leride eklenecek t├╝m alt pencereler (Ayarlar, Yard─▒m, vb.) bu fonksiyon ile olu┼şturulmal─▒d─▒r.
+-// Bu sayede her alt pencere otomatik olarak modal olur ve ana pencereyi bloklar.
+-// Ana pencereye t─▒klan─▒rsa Windows otomatik hata sesi ├ğalar.
+-function createChildWindow(options = {}) {
+-  const childWindow = new BrowserWindow({
+-    width: options.width || 900,
+-    height: options.height || 600,
+-    minWidth: options.minWidth || 700,
+-    minHeight: options.minHeight || 500,
+-    parent: mainWindow,    // Ana pencereye ba─şla
+-    modal: true,           // Modal yap (Ana pencere bloklan─▒r, t─▒klan─▒rsa sistem sesi ├ğalar)
+-    frame: false,
+-    transparent: false,
+-    show: false,
+-    webPreferences: {
+-      nodeIntegration: false,
+-      contextIsolation: true,
+-      preload: path.join(__dirname, '../electron/preload.cjs')
+-    }
+-  });
+-
+-  childWindow.setMenu(null);
+-
+-  // URL veya hash route y├╝kle
+-  if (options.route) {
+-    if (isDev) {
+-      childWindow.loadURL(`http://localhost:5173/#/${options.route}`);
+-    } else {
+-      const distPath = path.join(__dirname, '../dist', 'index.html');
+-      childWindow.loadURL(`file://${distPath}#/${options.route}`);
+-    }
+-  }
+-
+-  childWindow.once('ready-to-show', () => {
+-    childWindow.show();
+-  });
+-
+-  return childWindow;
+-}
+-
+-// ====== C# BRIDGE CALLER ID ENTEGRASYONU ======
+-const { spawn } = require('child_process');
+-let bridgeProcess = null;
+-
+-function connectToCallerId() {
+-  // Dev modunda src-electron/bridge/, ├╝retim modunda resources/bridge/
+-  const bridgePath = isDev
+-    ? path.join(__dirname, 'bridge/GCallerIDBridge.exe')
+-    : path.join(process.resourcesPath, 'bridge/GCallerIDBridge.exe');
+-  console.log('Caller ID Bridge ba┼şlat─▒l─▒yor:', bridgePath);
+-
+-  try {
+-    bridgeProcess = spawn(bridgePath, [], {
+-      cwd: path.dirname(bridgePath)
+-    });
+-
+-    bridgeProcess.stdout.on('data', (data) => {
+-      const output = data.toString();
+-      // Sat─▒rlar─▒ \r\n veya \n format─▒na g├Âre ay─▒r─▒p her birini trim et
+-      const lines = output.split(/\r?\n/);
+-
+-      lines.forEach(line => {
+-        const trimmed = line.trim();
+-        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+-          callerIdParser.handleBridgeData(trimmed);
+-        } else if (trimmed) {
+-          console.log('[Bridge Log]:', trimmed);
+-        }
+-      });
+-    });
+-
+-    bridgeProcess.stderr.on('data', (data) => {
+-      console.error('[Bridge Error]:', data.toString());
+-    });
+-
+-    bridgeProcess.on('close', (code) => {
+-      console.log(`Bridge s├╝reci kapand─▒ (Kod: ${code}). 3 saniye sonra yeniden denenecek...`);
+-      bridgeProcess = null;
+-      if (mainWindow) mainWindow.webContents.send('usb-status', false);
+-      setTimeout(connectToCallerId, 3000);
+-    });
+-
+-    if (mainWindow) mainWindow.webContents.send('usb-status', true);
+-
+-  } catch (error) {
+-    console.error('Bridge ba┼şlat─▒lamad─▒:', error);
+-    if (mainWindow) mainWindow.webContents.send('usb-status', false);
+-    setTimeout(connectToCallerId, 5000);
+-  }
+-}
+-
+-console.log("ELECTRON OBJESI:", require('electron'));
+-
+-app.whenReady().then(() => {
+-  // DLL cache yolunu app.userData alt─▒nda tan─▒mla (app ready sonras─▒ kullan─▒labilir)
+-  rawPrinterDllPath = path.join(app.getPath('userData'), 'raw_printer_core.dll');
+-  console.log('[RawPrinter] DLL cache yolu:', rawPrinterDllPath);
+-
+-  // ÔöÇÔöÇ L─░SANS KONTROL├£ ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+-  let licenseWindow = null;
+-
+-  const openLicenseWindow = () => {
+-    licenseWindow = new BrowserWindow({
+-      width: 500, height: 500,
+-      resizable: false,
+-      frame: false,
+-      webPreferences: {
+-        nodeIntegration: false,
+-        contextIsolation: true,
+-        preload: path.join(__dirname, '../electron/preload.cjs')
+-      }
+-    });
+-    licenseWindow.setMenu(null);
+-    licenseWindow.loadFile(path.join(__dirname, 'license-activation.html'));
+-    licenseWindow.on('closed', () => { licenseWindow = null; });
+-  };
+-
+-  // activate-license: lisans aktivasyon penceresinden gelen do─şrulama iste─şi
+-  ipcMain.handle('activate-license', async (event, key) => {
+-    const result = await verifyLicense(key);
+-    return result;
+-  });
+-
+-  // license-success: aktivasyon ba┼şar─▒l─▒ ÔåÆ pencereyi kapat, ana uygulamay─▒ a├ğ
+-  ipcMain.on('license-success', () => {
+-    if (licenseWindow) { licenseWindow.close(); licenseWindow = null; }
+-    if (!mainWindow) {
+-      createWindow();
+-      connectToCallerId();
+-    } else {
+-      mainWindow.show();
+-    }
+-  });
+-
+-  // Lisans kontrol├╝: yerel cache varsa h─▒zl─▒ do─şrula, yoksa aktivasyon penceresini a├ğ
+-  // DEV_MODE bypass: Ba┼şlat.bat'tan SET DEV_MODE=true ile ba┼şlat─▒lm─▒┼şsa lisans atlan─▒r.
+-  // Bu de─şi┼şken sadece geli┼ştirici ortam─▒nda tan─▒ml─▒d─▒r; kurulu .exe'de asla mevcut de─şildir.
+-  if (process.env.DEV_MODE === 'true') {
+-    console.log('[License] DEV_MODE aktif ÔÇö lisans kontrol├╝ atlan─▒yor.');
+-    createWindow();
+-    connectToCallerId();
+-  } else {
+-    const local = readLocalLicense();
+-    if (local && local.licenseKey) {
+-      console.log('[License] Kay─▒tl─▒ lisans bulundu, do─şrulan─▒yor...');
+-      verifyLicense(local.licenseKey).then(result => {
+-        if (result.valid) {
+-          console.log('[License] Lisans ge├ğerli ÔÇö ana pencere a├ğ─▒l─▒yor.');
+-          createWindow();
+-          connectToCallerId();
+-        } else {
+-          console.warn('[License] Lisans ge├ğersiz:', result.message);
+-          openLicenseWindow();
+-        }
+-      });
+-    } else {
+-      console.log('[License] Kay─▒tl─▒ lisans yok ÔÇö aktivasyon penceresi a├ğ─▒l─▒yor.');
+-      openLicenseWindow();
+-    }
+-  }
+-
+-  // Parser'dan gelen onRing eventini React'a dinletmek
+-  callerIdParser.on('onRing', (callData) => {
+-    if (mainWindow) {
+-      mainWindow.webContents.send('caller-id-data', callData);
+-    }
+-  });
+-  callerIdParser.on('onIdle', (idleData) => {
+-    if (mainWindow) {
+-      mainWindow.webContents.send('caller-id-data', idleData);
+-    }
+-  });
+-
+-  callerIdParser.on('sync-status', (syncInfo) => {
+-    if (mainWindow) {
+-      mainWindow.webContents.send('sync-status', syncInfo);
+-    }
+-  });
+-
+-  callerIdParser.on('global-data-updated', () => {
+-    if (mainWindow) {
+-      mainWindow.webContents.send('global-data-updated');
+-    }
+-  });
+-
+-  // Parser'dan gelen USB durum de─şi┼şikliklerini aray├╝ze ilet
+-  callerIdParser.on('usb-status', (status) => {
+-    if (mainWindow) {
+-      mainWindow.webContents.send('usb-status', status);
+-    }
+-  });
+-
+-  // ─░nternet durumunu ana s├╝re├ğten de kontrol edelim (Aray├╝z bazen yakalayam─▒yor)
+-  setInterval(() => {
+-    const isOnline = require('electron').net.isOnline();
+-    if (mainWindow) {
+-      mainWindow.webContents.send('internet-status', isOnline);
+-    }
+-  }, 5000);
+-
+-  app.on('activate', () => {
+-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+-  });
+-  ipcMain.handle('manual-refresh', async (event, { lineLabel, phone }) => {
+-    return await callerIdParser.manualRefresh(lineLabel, phone);
+-  });
+-
+-  ipcMain.handle('lookup-customer', (event, phone) => {
+-    return callerIdParser.lookupCustomer(phone);
+-  });
+-
+-  ipcMain.handle('force-sync', () => {
+-    callerIdParser.forceSync();
+-  });
+-
+-  ipcMain.handle('advanced-search', (event, query) => {
+-    return callerIdParser.searchDatabase(query);
+-  });
+-
+-  // ====== MODAL PENCERE G├ûRSEL UYARI (KIRMIZI G├ûLGE) ======
+-  // ====== M├£┼ŞTER─░ D├£ZENLEME PENCERES─░ (Electron BrowserWindow) ======
+-  // Sistem taray─▒c─▒s─▒ yerine Electron penceresi kullan─▒l─▒r; b├Âylece sayfa
+-  // y├╝klendikten sonra executeJavaScript() ile Ajax filtresi tetiklenebilir.
+-  ipcMain.on('open-customer-edit', (event, { customerId, phone }) => {
+-    const BASE_URL = "https://gaziburma.com/api/index.php?anahtar=;_u9uhe!M5%3C:pMB^";
+-
+-    const editWin = new BrowserWindow({
+-      width: 1280,
+-      height: 860,
+-      minWidth: 900,
+-      minHeight: 600,
+-      title: 'Gaziburma Web Aray├╝z├╝',
+-      webPreferences: {
+-        nodeIntegration: false,
+-        contextIsolation: true
+-      }
+-    });
+-
+-    editWin.setMenu(null);
+-    editWin.maximize();          // Tam ekran (Maximize) olarak a├ğ
+-    editWin.loadURL(BASE_URL);
+-
+-    // Sayfa tamamen y├╝klenince filtre JS'ini enjekte et
+-    // 600ms gecikme: DataTables init + Ajax tablo verisi y├╝klenmesi i├ğin bekliyoruz
+-    editWin.webContents.on('did-finish-load', () => {
+-      // Telefon numaras─▒n─▒ her zaman kullan (ID g├╝venilir de─şil)
+-      // Virg├╝ll├╝ ├ğoklu numaralarda sadece ilkini al: "0533...,0212..." ÔåÆ "0533..."
+-      const rawPhone = phone && phone !== 'Veri Bekleniyor' && phone !== 'Bilinmiyor'
+-        ? String(phone).split(/[,;\s]+/)[0].trim()
+-        : null;
+-
+-      if (!rawPhone) return;
+-
+-      setTimeout(() => {
+-        const jsCode = `
+-          (function() {
+-            var phoneInput = document.querySelector("input.col-search-input[placeholder='M├╝┼şteri Telefon Numaras─▒']");
+-
+-            if (!phoneInput) {
+-              console.warn('[CallerID] Telefon arama kutusu bulunamad─▒!');
+-              return;
+-            }
+-
+-            phoneInput.value = ${JSON.stringify(rawPhone)};
+-
+-            phoneInput.dispatchEvent(new Event('input',  { bubbles: true }));
+-            phoneInput.dispatchEvent(new Event('change', { bubbles: true }));
+-            phoneInput.dispatchEvent(new KeyboardEvent('keyup', {
+-              bubbles: true, cancelable: true,
+-              key: 'Enter', code: 'Enter', keyCode: 13, which: 13
+-            }));
+-
+-            console.log('[CallerID] Telefon filtresi tetiklendi:', ${JSON.stringify(rawPhone)});
+-          })();
+-        `;
+-
+-        editWin.webContents.executeJavaScript(jsCode).catch(err => {
+-          console.error('[EditCustomer] JS enjeksiyon hatas─▒:', err.message);
+-        });
+-      }, 600);
+-    });
+-
+-    editWin.on('closed', () => { /* temizlik gerekmez */ });
+-  });
+-
+-  // ====== MODAL PENCERE G├ûRSEL UYARI (KIRMIZI G├ûLGE) ======
+-  // Modal pencere a├ğ─▒kken kullan─▒c─▒ arka plan─▒ t─▒klad─▒─ş─▒nda, OS sesli uyar─▒ verir.
+-  // Bu fonksiyon ek olarak pencereye 'flash-alert' IPC mesaj─▒ g├Ândererek
+-  // frontend'de k─▒rm─▒z─▒ g├Âlge CSS animasyonunu tetikler.
+-  const flashAlertWindow = (win) => {
+-    if (!win || win.isDestroyed()) return;
+-    win.webContents.send('flash-alert');
+-  };
+-
+-  // Ayarlar Penceresi (Modal - createChildWindow helper kullan─▒l─▒yor)
+-  let settingsWindow = null;
+-  ipcMain.on('open-settings', () => {
+-    if (settingsWindow) {
+-      if (settingsWindow.isMinimized()) settingsWindow.restore();
+-      settingsWindow.focus();
+-      return;
+-    }
+-
+-    settingsWindow = createChildWindow({
+-      width: 900, height: 750, minWidth: 800, minHeight: 650,
+-      route: 'settings'
+-    });
+-
+-    // Windows modal pencereye arka plan t─▒kland─▒─ş─▒nda modal'a
+-    // yeniden focus g├Ânderiyor ÔÇö bunu yakal─▒yoruz.
+-    // ─░lk a├ğ─▒l─▒┼ştaki focus'u atlamak i├ğin 900ms guard kullan─▒l─▒yor.
+-    let settingsFocusReady = false;
+-    setTimeout(() => { settingsFocusReady = true; }, 900);
+-    const onSettingsFocus = () => { if (settingsFocusReady) flashAlertWindow(settingsWindow); };
+-    settingsWindow.on('focus', onSettingsFocus);
+-
+-    settingsWindow.on('closed', () => {
+-      settingsWindow.removeListener('focus', onSettingsFocus);
+-      settingsWindow = null;
+-    });
+-  });
+-
+-  ipcMain.on('close-settings', () => {
+-    if (settingsWindow) {
+-      settingsWindow.close();
+-    }
+-  });
+-
+-  // Yard─▒m Penceresi (Modal - createChildWindow helper kullan─▒l─▒yor)
+-  let helpWindow = null;
+-  ipcMain.on('open-help', () => {
+-    if (helpWindow) {
+-      if (helpWindow.isMinimized()) helpWindow.restore();
+-      helpWindow.focus();
+-      return;
+-    }
+-
+-    helpWindow = createChildWindow({
+-      width: 850, height: 700, minWidth: 700, minHeight: 500,
+-      route: 'help'
+-    });
+-
+-    // Ayn─▒ mekanizma: Help modal'a arka plan t─▒kland─▒─ş─▒nda focus eventi yan─▒ al─▒n─▒yor.
+-    let helpFocusReady = false;
+-    setTimeout(() => { helpFocusReady = true; }, 900);
+-    const onHelpFocus = () => { if (helpFocusReady) flashAlertWindow(helpWindow); };
+-    helpWindow.on('focus', onHelpFocus);
+-
+-    helpWindow.on('closed', () => {
+-      helpWindow.removeListener('focus', onHelpFocus);
+-      helpWindow = null;
+-    });
+-  });
+-
+-  ipcMain.on('close-help', () => {
+-    if (helpWindow) {
+-      helpWindow.close();
+-    }
+-  });
+-
+-  // Hakk─▒nda Penceresi
+-  let aboutWindow = null;
+-  ipcMain.on('open-about', () => {
+-    if (aboutWindow) {
+-      if (aboutWindow.isMinimized()) aboutWindow.restore();
+-      aboutWindow.focus();
+-      return;
+-    }
+-
+-    aboutWindow = createChildWindow({
+-      width: 500, height: 440, minWidth: 460, minHeight: 400,
+-      route: 'about'
+-    });
+-
+-    let aboutFocusReady = false;
+-    setTimeout(() => { aboutFocusReady = true; }, 900);
+-    const onAboutFocus = () => { if (aboutFocusReady) flashAlertWindow(aboutWindow); };
+-    aboutWindow.on('focus', onAboutFocus);
+-
+-    aboutWindow.on('closed', () => {
+-      aboutWindow.removeListener('focus', onAboutFocus);
+-      aboutWindow = null;
+-    });
+-  });
+-
+-
+-  // ====== B─░ZE YAZIN ÔÇö TELEGRAM BOT ======
+-  const TELEGRAM_TOKEN   = '8784676783:AAEYmsIUTX2WNNXXl9tl02PrHPm4mLlnNDo';
+-  const TELEGRAM_CHAT_ID = '5556339591';
+-
+-  let contactWindow = null;
+-  ipcMain.on('open-contact-form', () => {
+-    if (contactWindow) {
+-      if (contactWindow.isMinimized()) contactWindow.restore();
+-      contactWindow.focus();
+-      return;
+-    }
+-    contactWindow = createChildWindow({ width: 520, height: 560, minWidth: 480, minHeight: 500, route: 'contact' });
+-    let contactFocusReady = false;
+-    setTimeout(() => { contactFocusReady = true; }, 900);
+-    const onContactFocus = () => { if (contactFocusReady) flashAlertWindow(contactWindow); };
+-    contactWindow.on('focus', onContactFocus);
+-    contactWindow.on('closed', () => {
+-      contactWindow.removeListener('focus', onContactFocus);
+-      contactWindow = null;
+-    });
+-  });
+-
+-  ipcMain.handle('send-telegram-message', async (event, data) => {
+-    const name = data.name || '';
+-    const subject = data.subject || '';
+-    const message = data.message || '';
+-    const attachment = data.attachment || null; // { base64, filename, mimeType }
+-    const local = readLocalLicense ? readLocalLicense() : null;
+-    const licenseKey = local && local.licenseKey ? local.licenseKey : 'Bilinmiyor';
+-    const now = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+-    const lines = [
+-      '\u{1F4E9} *Yeni Mesaj \u2014 Caller ID*',
+-      '',
+-      '\u{1F464} *Ad/Unvan:* ' + (name || '\u2014'),
+-      '\u{1F4CC} *Konu:* ' + (subject || '\u2014'),
+-      '\u{1F4AC} *Mesaj:*\n' + message,
+-      '',
+-      '\u{1F511} *Lisans:* ' + licenseKey,
+-      '\u{1F550} *Zaman:* ' + now,
+-    ];
+-    const text = lines.join('\n');
+-
+-    // ÔöÇÔöÇ Ek dosya varsa sendPhoto veya sendDocument kullan ÔöÇÔöÇ
+-    if (attachment) {
+-      return new Promise((resolve) => {
+-        const https = require('https');
+-        const fileBuffer = Buffer.from(attachment.base64, 'base64');
+-        const isImage = attachment.mimeType.startsWith('image/');
+-        const endpoint = isImage ? '/sendPhoto' : '/sendDocument';
+-        const fieldName = isImage ? 'photo' : 'document';
+-
+-        // Multipart boundary
+-        const boundary = '----FormBoundary' + Math.random().toString(36).slice(2);
+-        const CRLF = '\r\n';
+-
+-        const buildPart = (name, value) =>
+-          `--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}${value}${CRLF}`;
+-
+-        const filePart = Buffer.concat([
+-          Buffer.from(
+-            `--${boundary}${CRLF}` +
+-            `Content-Disposition: form-data; name="${fieldName}"; filename="${attachment.filename}"${CRLF}` +
+-            `Content-Type: ${attachment.mimeType}${CRLF}${CRLF}`
+-          ),
+-          fileBuffer,
+-          Buffer.from(CRLF)
+-        ]);
+-
+-        const bodyParts = Buffer.concat([
+-          Buffer.from(buildPart('chat_id', TELEGRAM_CHAT_ID)),
+-          Buffer.from(buildPart('caption', text)),
+-          Buffer.from(buildPart('parse_mode', 'Markdown')),
+-          filePart,
+-          Buffer.from(`--${boundary}--${CRLF}`)
+-        ]);
+-
+-        const reqOpts = {
+-          hostname: 'api.telegram.org',
+-          path: '/bot' + TELEGRAM_TOKEN + endpoint,
+-          method: 'POST',
+-          headers: {
+-            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+-            'Content-Length': bodyParts.length
+-          }
+-        };
+-
+-        const req = https.request(reqOpts, (res) => {
+-          let raw = '';
+-          res.on('data', (chunk) => { raw += chunk; });
+-          res.on('end', () => {
+-            try {
+-              const json = JSON.parse(raw);
+-              console.log('[Telegram] Attachment g├Ânderildi:', json.ok ? 'OK' : json.description);
+-              resolve({ ok: !!json.ok });
+-            } catch (e) { resolve({ ok: false }); }
+-          });
+-        });
+-        req.on('error', (e) => { console.error('[Telegram] Attachment hatas─▒:', e.message); resolve({ ok: false }); });
+-        req.write(bodyParts);
+-        req.end();
+-      });
+-    }
+-
+-    // ÔöÇÔöÇ Ek yoksa sendMessage ile d├╝z metin g├Ânder ÔöÇÔöÇ
+-    return new Promise((resolve) => {
+-      const https = require('https');
+-      const body = JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'Markdown' });
+-      const req = https.request({
+-        hostname: 'api.telegram.org',
+-        path: '/bot' + TELEGRAM_TOKEN + '/sendMessage',
+-        method: 'POST',
+-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+-      }, (res) => {
+-        let raw = '';
+-        res.on('data', (chunk) => { raw += chunk; });
+-        res.on('end', () => {
+-          try {
+-            const json = JSON.parse(raw);
+-            console.log('[Telegram]', json.ok ? 'G├Ânderildi OK' : 'Hata: ' + json.description);
+-            resolve({ ok: !!json.ok });
+-          } catch (e) { resolve({ ok: false }); }
+-        });
+-      });
+-      req.on('error', (e) => { console.error('[Telegram] Hata:', e.message); resolve({ ok: false }); });
+-      req.write(body);
+-      req.end();
+-    });
+-  });
+-
+-  // ====== VERS─░YON Y├ûNET─░M─░ ======
+-  const versionConfigPath = path.join(app.getPath('userData'), 'version-config.json');
+-
+-  ipcMain.handle('get-version', () => {
+-    // Versiyon her zaman package.json'daki app s├╝r├╝m├╝nden okunur
+-    const appVersion = 'V' + app.getVersion();
+-    let date;
+-    try {
+-      if (fs.existsSync(versionConfigPath)) {
+-        const cfg = JSON.parse(fs.readFileSync(versionConfigPath, 'utf-8'));
+-        date = cfg.date || null;
+-      }
+-    } catch (e) { /* ignore */ }
+-    if (!date) {
+-      const today = new Date();
+-      const dd = String(today.getDate()).padStart(2, '0');
+-      const mm = String(today.getMonth() + 1).padStart(2, '0');
+-      date = `${dd}.${mm}.${today.getFullYear()}`;
+-    }
+-    return { version: appVersion, date };
+-  });
+-
+-  ipcMain.handle('save-version', (event, { version, date }) => {
+-    try {
+-      fs.writeFileSync(versionConfigPath, JSON.stringify({ version, date }, null, 2), 'utf-8');
+-      return { success: true };
+-    } catch (e) {
+-      console.error('Versiyon config kaydedilemedi:', e);
+-      return { success: false, error: e.message };
+-    }
+-  });
+-
+-  // ====== G├£NCELLEME KONTROL├£ (GitHub / electron-updater) ======
+-  ipcMain.handle('check-for-updates', async () => {
+-    if (isDev) {
+-      return { pending: true, message: 'Geli┼ştirme modunda g├╝ncelleme kontrol├╝ devre d─▒┼ş─▒.' };
+-    }
+-    if (!autoUpdater) {
+-      return { error: 'G├╝ncelleme mod├╝l├╝ y├╝klenemedi.' };
+-    }
+-    try {
+-      const result = await autoUpdater.checkForUpdates();
+-      const currentVersion = app.getVersion();
+-      const latestVersion = result?.updateInfo?.version || currentVersion;
+-      const hasUpdate = result?.updateInfo?.version
+-        ? result.updateInfo.version !== currentVersion
+-        : false;
+-      const rn = result?.updateInfo?.releaseNotes;
+-      const releaseNotes = Array.isArray(rn)
+-        ? rn.map(r => (typeof r === 'string' ? r : r.note || '')).join('\n')
+-        : (typeof rn === 'string' ? rn : '');
+-      return {
+-        updateAvailable: hasUpdate,
+-        hasUpdate,
+-        currentVersion: 'v' + currentVersion,
+-        latestVersion: 'v' + latestVersion,
+-        releaseNotes,
+-        url: 'https://github.com/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest'
+-      };
+-    } catch (err) {
+-      console.error('[Updater] G├╝ncelleme kontrol├╝ hatas─▒:', err.message);
+-      return { error: err.message };
+-    }
+-  });
+-
+-  // ====== ─░ND─░R & KUR (Otomatik G├╝ncelleme ÔÇö In-App Download) ======
+-  // 1. GitHub Releases API'den en son .exe asset URL'ini al
+-  // 2. HTTPS ile exe'yi %TEMP% klas├Âr├╝ne indir, ilerlemeyi frontend'e bildir
+-  // 3. ─░ndirme bitince installer'─▒ ba┼şlat ve app'─▒ kapat
+-  ipcMain.handle('download-and-install-update', async (event) => {
+-    const GH_TOKEN = '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';
+-    const sendProgress = (pct) => {
+-      if (mainWindow && !mainWindow.isDestroyed()) {
+-        mainWindow.webContents.send('download-progress', pct);
+-      }
+-    };
+-
+-    try {
+-      // Ad─▒m 1: En son release'i al
+-      const releaseInfo = await new Promise((resolve, reject) => {
+-        const opts = {
+-          hostname: 'api.github.com',
+-          path: '/repos/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest',
+-          method: 'GET',
+-          headers: {
+-            'Authorization': `token ${GH_TOKEN}`,
+-            'User-Agent': 'CallerIDApp',
+-            'Accept': 'application/vnd.github.v3+json'
+-          }
+-        };
+-        const req = https.request(opts, (res) => {
+-          let data = '';
+-          res.on('data', c => data += c);
+-          res.on('end', () => {
+-            try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+-          });
+-        });
+-        req.on('error', reject);
+-        req.end();
+-      });
+-
+-      // Ad─▒m 2: .exe asset URL'ini bul
+-      const asset = (releaseInfo.assets || []).find(a => a.name.endsWith('.exe'));
+-      if (!asset) return { success: false, error: 'Kurulum dosyas─▒ bulunamad─▒.' };
+-
+-      const downloadUrl = asset.browser_download_url;
+-      const exeName = asset.name;
+-      const destPath = path.join(os.tmpdir(), exeName);
+-
+-      sendProgress(0);
+-
+-      // Ad─▒m 3: Dosyay─▒ indir (redirect deste─şi ile)
+-      await new Promise((resolve, reject) => {
+-        const doDownload = (url, redirectCount = 0) => {
+-          if (redirectCount > 5) return reject(new Error('├çok fazla y├Ânlendirme.'));
+-          const urlObj = new URL(url);
+-          const reqOpts = {
+-            hostname: urlObj.hostname,
+-            path: urlObj.pathname + urlObj.search,
+-            method: 'GET',
+-            headers: {
+-              'Authorization': `token ${GH_TOKEN}`,
+-              'User-Agent': 'CallerIDApp',
+-              'Accept': 'application/octet-stream'
+-            }
+-          };
+-          const fileStream = fs.createWriteStream(destPath);
+-          const req = https.request(reqOpts, (res) => {
+-            // Y├Ânlendirme (301/302/307)
+-            if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) && res.headers.location) {
+-              fileStream.close(() => fs.unlink(destPath, () => {}));
+-              doDownload(res.headers.location, redirectCount + 1);
+-              return;
+-            }
+-            const total = parseInt(res.headers['content-length'] || '0', 10);
+-            let received = 0;
+-            res.on('data', (chunk) => {
+-              received += chunk.length;
+-              if (total > 0) sendProgress(Math.round((received / total) * 100));
+-            });
+-            res.pipe(fileStream);
+-            fileStream.on('finish', () => { fileStream.close(); resolve(); });
+-            fileStream.on('error', reject);
+-            res.on('error', reject);
+-          });
+-          req.on('error', (e) => { fileStream.close(() => fs.unlink(destPath, () => {})); reject(e); });
+-          req.end();
+-        };
+-        doDownload(downloadUrl);
+-      });
+-
+-      sendProgress(100);
+-
+-      // Ad─▒m 4: Installer'─▒ ba┼şlat ve uygulamay─▒ kapat
+-      console.log('[Update] ─░ndirme tamamland─▒, installer ba┼şlat─▒l─▒yor:', destPath);
+-      await shell.openPath(destPath);
+-      setTimeout(() => app.quit(), 1500);
+-
+-      return { success: true };
+-    } catch (err) {
+-      console.error('[Update] ─░ndirme hatas─▒:', err.message);
+-      return { success: false, error: err.message };
+-    }
+-  });
+-
+-
+-  // ====== HAT NUMARALARI Y├ûNET─░M─░ ======
+-  const hatConfigPath = path.join(app.getPath('userData'), 'hat-config.json');
+-
+-  ipcMain.handle('get-hat-numbers', () => {
+-    try {
+-      if (fs.existsSync(hatConfigPath)) {
+-        const data = JSON.parse(fs.readFileSync(hatConfigPath, 'utf-8'));
+-        return data.hatNumbers || { 1: '', 2: '', 3: '' };
+-      }
+-    } catch (e) { console.error('Hat config y├╝klenemedi:', e); }
+-    return { 1: '', 2: '', 3: '' };
+-  });
+-
+-  ipcMain.handle('save-hat-numbers', (event, hatNumbers) => {
+-    try {
+-      fs.writeFileSync(hatConfigPath, JSON.stringify({ hatNumbers }, null, 2), 'utf-8');
+-      if (mainWindow) mainWindow.webContents.send('hat-numbers-updated', hatNumbers);
+-      return { success: true };
+-    } catch (e) {
+-      console.error('Hat config kaydedilemedi:', e);
+-      return { success: false, error: e.message };
+-    }
+-  });
+-
+-  // ====== TEMA Y├ûNET─░M─░ (A├çIK / KOYU MOD) ======
+-  const themeConfigPath = path.join(app.getPath('userData'), 'theme-config.json');
+-
+-  ipcMain.handle('get-theme', () => {
+-    try {
+-      if (fs.existsSync(themeConfigPath)) {
+-        const data = JSON.parse(fs.readFileSync(themeConfigPath, 'utf-8'));
+-        return data.theme || 'light';
+-      }
+-    } catch (e) { console.error('Tema config y├╝klenemedi:', e); }
+-    return 'light';
+-  });
+-
+-  ipcMain.handle('save-theme', (event, theme) => {
+-    try {
+-      fs.writeFileSync(themeConfigPath, JSON.stringify({ theme }, null, 2), 'utf-8');
+-      // Ana pencereye tema de─şi┼şti─şini bildir
+-      if (mainWindow) mainWindow.webContents.send('theme-updated', theme);
+-      return { success: true };
+-    } catch (e) {
+-      console.error('Tema config kaydedilemedi:', e);
+-      return { success: false, error: e.message };
+-    }
+-  });
+-
+-  // ====== PAROLA Y├ûNET─░M─░ ======
+-  const passwordConfigPath = path.join(app.getPath('userData'), 'password-config.json');
+-  const sha256 = (str) => crypto.createHash('sha256').update(str).digest('hex');
+-
+-  ipcMain.handle('get-password-config', () => {
+-    try {
+-      if (fs.existsSync(passwordConfigPath)) {
+-        const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));
+-        // hash ve cevap hash'ini frontend'e d├Ând├╝rme ÔÇö sadece meta verileri d├Ân
+-        return { enabled: data.enabled || false, secretQuestion: data.secretQuestion || '' };
+-      }
+-    } catch (e) { console.error('Parola config okunamad─▒:', e); }
+-    return { enabled: false, secretQuestion: '' };
+-  });
+-
+-  ipcMain.handle('save-password-config', (event, { enabled, password, secretQuestion, secretAnswer }) => {
+-    try {
+-      const existing = fs.existsSync(passwordConfigPath)
+-        ? JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'))
+-        : {};
+-      const config = {
+-        enabled,
+-        passwordHash: password ? sha256(password) : (existing.passwordHash || ''),
+-        secretQuestion: secretQuestion || (existing.secretQuestion || ''),
+-        secretAnswerHash: secretAnswer ? sha256(secretAnswer.toLowerCase().trim()) : (existing.secretAnswerHash || '')
+-      };
+-      fs.writeFileSync(passwordConfigPath, JSON.stringify(config, null, 2), 'utf-8');
+-      return { success: true };
+-    } catch (e) {
+-      console.error('Parola config kaydedilemedi:', e);
+-      return { success: false, error: e.message };
+-    }
+-  });
+-
+-  ipcMain.handle('verify-password', (event, password) => {
+-    try {
+-      if (!fs.existsSync(passwordConfigPath)) return false;
+-      const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));
+-      return data.passwordHash === sha256(password);
+-    } catch (e) { return false; }
+-  });
+-
+-  ipcMain.handle('verify-secret-answer', (event, answer) => {
+-    try {
+-      if (!fs.existsSync(passwordConfigPath)) return false;
+-      const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));
+-      return data.secretAnswerHash === sha256(answer.toLowerCase().trim());
+-    } catch (e) { return false; }
+-  });
+-
+-  ipcMain.handle('reset-password', (event, newPassword) => {
+-    try {
+-      if (!fs.existsSync(passwordConfigPath)) return { success: false };
+-      const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));
+-      data.passwordHash = sha256(newPassword);
+-      fs.writeFileSync(passwordConfigPath, JSON.stringify(data, null, 2), 'utf-8');
+-      return { success: true };
+-    } catch (e) {
+-      return { success: false, error: e.message };
+-    }
+-  });
+-
+-  // ====== Y├ûNET─░C─░ ┼Ş─░FRES─░ ======
+-  // Sabit y├Ânetici ┼şifresi ÔÇö SHA-256 hash olarak saklan─▒r
+-  const ADMIN_PASSWORD_HASH = sha256('04011985teknogoz');
+-
+-  ipcMain.handle('verify-admin-password', (event, pwd) => {
+-    return sha256(pwd) === ADMIN_PASSWORD_HASH;
+-  });
+-
+-  ipcMain.handle('admin-disable-password', async (event, adminPwd) => {
+-    if (sha256(adminPwd) !== ADMIN_PASSWORD_HASH) {
+-      return { success: false, error: 'Yanl─▒┼ş y├Ânetici ┼şifresi.' };
+-    }
+-    try {
+-      const config = { enabled: false, passwordHash: '', secretQuestion: '', secretAnswerHash: '' };
+-      fs.writeFileSync(passwordConfigPath, JSON.stringify(config, null, 2), 'utf-8');
+-      return { success: true };
+-    } catch (e) {
+-      return { success: false, error: e.message };
+-    }
+-  });
+-
+-  // ====== D─░L Y├ûNET─░M─░ ======
+-  const languageConfigPath = path.join(app.getPath('userData'), 'language-config.json');
+-
+-  ipcMain.handle('get-language', () => {
+-    try {
+-      if (fs.existsSync(languageConfigPath)) {
+-        const data = JSON.parse(fs.readFileSync(languageConfigPath, 'utf-8'));
+-        return data.lang || 'tr';
+-      }
+-    } catch (e) { console.error('Dil config okunamad─▒:', e); }
+-    return 'tr';
+-  });
+-
+-  ipcMain.handle('save-language', (event, lang) => {
+-    try {
+-      fs.writeFileSync(languageConfigPath, JSON.stringify({ lang }, null, 2), 'utf-8');
+-      return { success: true };
+-    } catch (e) {
+-      return { success: false, error: e.message };
+-    }
+-  });
+-
+-  ipcMain.handle('apply-language', async (event, lang) => {
+-    // 1. Dili kaydet
+-    try {
+-      fs.writeFileSync(languageConfigPath, JSON.stringify({ lang }, null, 2), 'utf-8');
+-    } catch (e) {
+-      return { success: false, error: e.message };
+-    }
+-
+-    // 2. Settings penceresini kapat
+-    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+-    if (senderWindow && senderWindow !== mainWindow) {
+-      senderWindow.close();
+-    }
+-
+-    // 3. Ana pencereyi yeniden y├╝kle (Vite dev server ├ğal─▒┼şmaya devam eder)
+-    if (mainWindow && !mainWindow.isDestroyed()) {
+-      mainWindow.webContents.reload();
+-    }
+-
+-    return { success: true };
+-  });
+-
+-  // ====== YAZICI Y├ûNET─░M─░ ======
+-  const printerConfigPath = path.join(app.getPath('userData'), 'printer-config.json');
+-
+-  // Sistemdeki t├╝m yaz─▒c─▒lar─▒ listele
+-  ipcMain.handle('get-printers', async () => {
+-    try {
+-      const printers = await mainWindow.webContents.getPrintersAsync();
+-      return printers.map(p => ({
+-        name: p.name,
+-        displayName: p.displayName || p.name,
+-        description: p.description || '',
+-        status: p.status,
+-        isDefault: p.isDefault
+-      }));
+-    } catch (error) {
+-      console.error('Yaz─▒c─▒ listesi al─▒namad─▒:', error);
+-      return [];
+-    }
+-  });
+-
+-  // Se├ğilen yaz─▒c─▒y─▒ kaydet
+-  ipcMain.handle('save-printer-selection', (event, printerName) => {
+-    try {
+-      const fs = require('fs');
+-      fs.writeFileSync(printerConfigPath, JSON.stringify({ selectedPrinter: printerName }, null, 2), 'utf-8');
+-      console.log('Yaz─▒c─▒ se├ğimi kaydedildi:', printerName);
+-      return { success: true };
+-    } catch (error) {
+-      console.error('Yaz─▒c─▒ se├ğimi kaydedilemedi:', error);
+-      return { success: false, error: error.message };
+-    }
+-  });
+-
+-  // Kaydedilmi┼ş yaz─▒c─▒ se├ğimini y├╝kle
+-  ipcMain.handle('get-printer-selection', () => {
+-    try {
+-      if (fs.existsSync(printerConfigPath)) {
+-        const data = JSON.parse(fs.readFileSync(printerConfigPath, 'utf-8'));
+-        return data.selectedPrinter || null;
+-      }
+-    } catch (error) {
+-      console.error('Yaz─▒c─▒ se├ğimi y├╝klenemedi:', error);
+-    }
+-    return null;
+-  });
+-
+-  //   // Yaz─▒c─▒ Ger├ğek Zamanl─▒ Durum Kontrol├╝ (TCP Ba─şlant─▒ Testi)
+-  // A─ş yaz─▒c─▒s─▒ i├ğin: PS ile IP al ÔåÆ TCP ba─şlant─▒s─▒ (9100/631/80) dene.
+-  // USB/payla┼ş─▒ml─▒ yaz─▒c─▒ i├ğin: Get-Printer PrinterStatus'a fallback.
+-  ipcMain.handle('get-printer-status', async (event, printerName) => {
+-    if (!printerName) return 'not_selected';
+-
+-    const { exec } = child_process;
+-    const net = require('net');
+-    // Tek t─▒rnak ve ├ğift t─▒rna─ş─▒ temizle ÔÇö PS komut sat─▒r─▒ g├╝venli─şi
+-    const escaped = printerName.replace(/'/g, "''").replace(/"/g, '');
+-
+-    // Yard─▒mc─▒: tek bir TCP portunu dene
+-    const tryTcp = (ip, port, timeoutMs) => new Promise((res) => {
+-      const sock = new net.Socket();
+-      let done = false;
+-      const finish = (ok) => { if (!done) { done = true; try { sock.destroy(); } catch (_) {} res(ok); } };
+-      sock.setTimeout(timeoutMs);
+-      sock.on('connect', () => finish(true));
+-      sock.on('error',   () => finish(false));
+-      sock.on('timeout', () => finish(false));
+-      try { sock.connect(port, ip); } catch (_) { finish(false); }
+-    });
+-
+-    // Ad─▒m 1: Yaz─▒c─▒n─▒n a─ş IP'sini tek sat─▒r PS komutuyla al (SON DERECE ├Ânemli: tek sat─▒r!)
+-    const ip = await new Promise((res) => {
+-      const cmd = `powershell -NoProfile -NonInteractive -Command "(Get-PrinterPort -Name (Get-Printer -Name '${escaped}' -ErrorAction Stop).PortName -ErrorAction Stop).PrinterHostAddress"`;
+-      exec(cmd, { timeout: 8000 }, (err, stdout, stderr) => {
+-        const val = (stdout || '').trim();
+-        console.log(`[Printer] IP query ÔåÆ stdout:'${val}' err:${err ? err.message : 'none'}`);
+-        res(err || !val ? '' : val);
+-      });
+-    });
+-
+-    if (ip) {
+-      // A─ş yaz─▒c─▒s─▒ ÔÇö TCP ile ger├ğek ba─şlant─▒ testi
+-      console.log(`[Printer] Testing TCP on ${ip} ...`);
+-      if (await tryTcp(ip, 9100, 3000)) { console.log('[Printer] READY:9100'); return 'ready'; }
+-      if (await tryTcp(ip, 631,  3000)) { console.log('[Printer] READY:631');  return 'ready'; }
+-      if (await tryTcp(ip, 80,   3000)) { console.log('[Printer] READY:80');   return 'ready'; }
+-      console.log('[Printer] NOT READY (all ports failed)');
+-      return 'not_ready';
+-    }
+-
+-    // IP al─▒namad─▒ (USB / payla┼ş─▒lan yaz─▒c─▒) ÔåÆ WorkOffline + WMI kontrol├╝
+-    // Get-Printer.PrinterStatus spooler ├Ânbelle─şi nedeniyle ge├ğ g├╝ncellenir.
+-    // WorkOffline=True ve Win32_Printer.PrinterStatus=7 (Offline) anl─▒k tepki verir.
+-    console.log(`[Printer] No network IP ÔÇö USB/WorkOffline+WMI check for '${printerName}'`);
+-    const usbStatus = await new Promise((res) => {
+-      // Tek PowerShell ├ğa─şr─▒s─▒nda ├╝├ğ de─şeri birden al:
+-      // Sat─▒r 1: WorkOffline (True/False)
+-      // Sat─▒r 2: Win32_Printer PrinterStatus say─▒s─▒ (3=Idle, 7=Offline)
+-      // Sat─▒r 3: Get-Printer PrinterStatus string (Idle/Normal/Offline)
+-      const wmiName = escaped.replace(/\\/g, '\\\\');
+-      const cmd3 = `powershell -NoProfile -NonInteractive -Command "$p=Get-Printer -Name '${escaped}' -ErrorAction Stop;$w=(Get-WmiObject -Class Win32_Printer -Filter \\"Name='${wmiName}'\\" -ErrorAction SilentlyContinue);Write-Output ($p.WorkOffline.ToString());Write-Output ($w.PrinterStatus);Write-Output ($p.PrinterStatus.ToString())"`;
+-      exec(cmd3, { timeout: 9000 }, (err3, out3) => {
+-        if (err3) {
+-          console.log(`[Printer] USB check error: ${err3.message}`);
+-          res({ workOffline: false, wmiStatus: -1, spoolerStatus: 'unknown' });
+-          return;
+-        }
+-        const lines = (out3 || '').trim().split(/\r?\n/).map(l => l.trim());
+-        const workOffline   = (lines[0] || '').toLowerCase() === 'true';
+-        const wmiStatus     = parseInt(lines[1] || '0', 10); // 3=Idle, 7=Offline
+-        const spoolerStatus = (lines[2] || '').toLowerCase();
+-        console.log(`[Printer] USBÔåÆ WorkOffline:${workOffline} WmiStatus:${wmiStatus} SpoolerStatus:${spoolerStatus}`);
+-        res({ workOffline, wmiStatus, spoolerStatus });
+-      });
+-    });
+-    // WorkOffline=True ÔåÆ kesinlikle ba─şl─▒ de─şil
+-    if (usbStatus.workOffline) return 'not_ready';
+-    // WMI PrinterStatus=7 ÔåÆ Offline (USB kablosu ├ğekildi, spooler hen├╝z g├╝ncellemedi)
+-    if (usbStatus.wmiStatus === 7) return 'not_ready';
+-    // Spooler durumu kontroll├╝ kar┼ş─▒la┼şt─▒rma
+-    return (usbStatus.spoolerStatus === 'idle' || usbStatus.spoolerStatus === 'normal' || usbStatus.spoolerStatus === 'printing')
+-      ? 'ready' : 'not_ready';
+-  });
+-
+-  // ====== RAW HARDWARE CUT (YARDIMCI FONKS─░YON) ======
+-  // Sadece ka─ş─▒t─▒ ilerletir ve keser. Yazd─▒rma i┼şleminden sonra ├ğa─ş─▒r─▒lmal─▒d─▒r.
+-  const triggerHardwareCut = (printerName) => {
+-    const fs = require('fs');
+-    const os = require('os');
+-    const { execFile } = require('child_process');
+-
+-    const ts = Date.now();
+-    const psPath = path.join(os.tmpdir(), `cid_cut_${ts}.ps1`);
+-
+-    // 0x0A: Line Feed (─░lerlet), 0x1D 0x56 0x42 0x00: GS V B 0 (Kesme Komutu)
+-    // DLL cache kullanarak h─▒zl─▒ y├╝kleme (Add-Type -OutputAssembly ile bir kez derlenir)
+-    const psScript = getRawPrinterPsHeader() + `
+-$printerName = '${printerName.replace(/'/g, "''")}'
+-$bytes = [byte[]]@(0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x42, 0x00)
+-
+-$hPrinter = [IntPtr]::Zero
+-$di = New-Object RawPrinterCore+DOCINFOA
+-$di.pDocName  = "CUT_COMMAND"
+-$di.pDataType = "RAW"
+-
+-if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero)) {
+-    [RawPrinterCore]::StartDocPrinter($hPrinter, 1, $di) | Out-Null
+-    [RawPrinterCore]::StartPagePrinter($hPrinter) | Out-Null
+-    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+-    [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)
+-    $written = 0
+-    [RawPrinterCore]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written) | Out-Null
+-    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+-    [RawPrinterCore]::EndPagePrinter($hPrinter) | Out-Null
+-    [RawPrinterCore]::EndDocPrinter($hPrinter) | Out-Null
+-    [RawPrinterCore]::ClosePrinter($hPrinter) | Out-Null
+-}
+-`;
+-    fs.writeFileSync(psPath, psScript, 'utf-8');
+-
+-    execFile(
+-      'powershell',
+-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
+-      { timeout: 15000 },
+-      () => {
+-        try { fs.unlinkSync(psPath); } catch (e) { }
+-      }
+-    );
+-  };
+-
+-  // ====== YAZDIRMA (ESC/POS RAW PROTOCOL) ======
+-  ipcMain.handle('print-customer-info', async (event, { name, phone, address, callerPhone }) => {
+-    try {
+-      let selectedPrinter = null;
+-      if (fs.existsSync(printerConfigPath)) {
+-        const config = JSON.parse(fs.readFileSync(printerConfigPath, 'utf-8'));
+-        selectedPrinter = config.selectedPrinter || null;
+-      }
+-      if (!selectedPrinter) {
+-        return { success: false, error: 'Yaz─▒c─▒ se├ğilmemi┼ş. L├╝tfen Ayarlar > Yaz─▒c─▒(lar) b├Âl├╝m├╝nden bir yaz─▒c─▒ se├ğin.' };
+-      }
+-      console.log('[Print] ESC/POS RAW yazd─▒rma ba┼şlad─▒:', selectedPrinter);
+-
+-      const now = new Date();
+-      const tarih = now.toLocaleDateString('tr-TR');
+-      const saat = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+-
+-      // ================================================================
+-      // ┼ŞABLON LAYOUT (sa─ş kenarl─▒k 9mm sa─şa kayd─▒r─▒ld─▒ ÔåÆ 70.5mm toplam)
+-      // Yatay ├ğizgi format─▒: |------...------|  (k├Â┼şelerde + YOK)
+-      // Etiket: 17 char | De─şer: 27 char ÔåÆ toplam 47 char (~70.5mm @ 1.5mm/char)
+-      // 1(|) + 17 + 1(|) + 27 + 1(|) = 47
+-      // ================================================================
+-
+-      const W = 48;   // toplam sat─▒r geni┼şli─şi
+-      const LBL = 17;   // etiket s├╝tunu
+-      const VAL = 28;   // de─şer s├╝tunu  (1+17+1+28+1 = 48)
+-      // Teslimat/Tutar: CAL=LBL ve CAR=VAL ÔåÆ orta | ayn─▒ pozisyonda
+-      const CAL = 31;   // Teslimat sol s├╝tun (17mm sa─şa kayd─▒r─▒ld─▒: 17ÔåÆ31)
+-      const CAR = 14;   // Tutar sa─ş s├╝tun  (17mm daralt─▒ld─▒: 28ÔåÆ14)
+-
+-      const pad = (str, len) => {
+-        const s = (str || '').toString().substring(0, len);
+-        return s + ' '.repeat(Math.max(0, len - s.length));
+-      };
+-      const center = (str, len) => {
+-        const s = (str || '').toString().substring(0, len);
+-        const sp = Math.max(0, len - s.length);
+-        return ' '.repeat(Math.floor(sp / 2)) + s + ' '.repeat(Math.ceil(sp / 2));
+-      };
+-      const rjust = (str, len) => {
+-        const s = (str || '').toString().substring(0, len);
+-        return ' '.repeat(Math.max(0, len - s.length)) + s;
+-      };
+-      // Turkce karakterler ASCII karsiliklarina donusturulur (yazici uyumlulugu)
+-      const normalizeTR = (str) => (str || '').toString()
+-        .replace(/\u015f/g, 's').replace(/\u015e/g, 'S')
+-        .replace(/\u011f/g, 'g').replace(/\u011e/g, 'G')
+-        .replace(/\u0131/g, 'i').replace(/\u0130/g, 'I')
+-        .replace(/\u00e7/g, 'c').replace(/\u00c7/g, 'C')
+-        .replace(/\u00f6/g, 'o').replace(/\u00d6/g, 'O')
+-        .replace(/\u00fc/g, 'u').replace(/\u00dc/g, 'U')
+-        .replace(/\u00e2/g, 'a').replace(/\u00ea/g, 'e')
+-        .replace(/\u00ee/g, 'i').replace(/\u00f4/g, 'o')
+-        .replace(/\u00fb/g, 'u').replace(/\u00e0/g, 'a');
+-      const textToBytes = (str) => {
+-        const s = normalizeTR(str);
+-        const result = [];
+-        for (let i = 0; i < s.length; i++) result.push(s.charCodeAt(i) & 0x7F);
+-        return result;
+-      };
+-      // Telefon numarasini (5XX) XXX XX XX veya (2XX) XXX XX XX formatina donusturur
+-      const fmtPhone = (raw) => {
+-        const digits = normalizeTR((raw || '').toString()).replace(/\D/g, '');
+-        let d = digits;
+-        if (d.length === 11 && d[0] === '0') d = d.slice(1); // bas?ndaki 0'? kaldir
+-        if (d.length === 10) {
+-          return '(' + d.slice(0, 3) + ') ' + d.slice(3, 6) + ' ' + d.slice(6, 8) + ' ' + d.slice(8);
+-        }
+-        return normalizeTR(raw || ''); // formatlanamiyorsa oldugu gibi
+-      };
+-      const hLine = () => '|' + '-'.repeat(LBL) + '|' + '-'.repeat(VAL) + '|';
+-      // Teslimat/Tutar ayrac─▒
+-      const hLineCols = () => '|' + '-'.repeat(CAL) + '|' + '-'.repeat(CAR) + '|';
+-
+-      // Standart 2 s├╝tunlu sat─▒r: | etiket          | de─şer                  |
+-      const dataRow = (label, value) => {
+-        const rows = [];
+-        const maxV = VAL - 1;
+-        const valStr = (value || '').toString();
+-        const chunks = [];
+-        if (valStr.length === 0) {
+-          chunks.push('');
+-        } else {
+-          for (let i = 0; i < valStr.length; i += maxV) {
+-            chunks.push(valStr.substring(i, i + maxV));
+-          }
+-        }
+-        chunks.forEach((chunk, idx) => {
+-          const lbl = idx === 0 ? pad(label, LBL) : pad('', LBL);
+-          rows.push('|' + lbl + '|' + ' ' + pad(chunk, maxV) + '|');
+-        });
+-        return rows;
+-      };
+-
+-      // Teslimat / Tutar sat─▒r─▒
+-      const colsRow = (left, right) => {
+-        return '|' + center(left, CAL) + '|' + center(right, CAR) + '|';
+-      };
+-
+-      // ================================================================
+-      // F─░┼Ş OLU┼ŞTURMA
+-      // ================================================================
+-      const buildReceipt = () => {
+-        const ESC = 0x1B;
+-        const GS = 0x1D;
+-        const LF = 0x0A;
+-        const bytes = [];
+-        const push = (...args) => args.forEach(b => bytes.push(b));
+-        const line = (str) => { bytes.push(...textToBytes(str)); bytes.push(LF); };
+-
+-        push(ESC, 0x40);         // Printer init
+-        push(ESC, 0x74, 0x12);   // PC857 T├╝rk├ğe kod sayfas─▒ÔÇö┼ş,─ş,─▒,─░ vs. do─şru basar
+-
+-        // Sadece de─şer k─▒sm─▒n─▒ bold yapan yard─▒mc─▒:
+-        // |label           |(BOLD)de─şer                    |(/BOLD) LF
+-        const boldValueRow = (label, value) => {
+-          const maxV = VAL - 1;
+-          const valStr = (value || '').toString();
+-          const chunks = valStr.length === 0 ? [''] :
+-            Array.from({ length: Math.ceil(valStr.length / maxV) },
+-              (_, i) => valStr.substring(i * maxV, (i + 1) * maxV));
+-
+-          chunks.forEach((chunk, idx) => {
+-            const lbl = idx === 0 ? pad(label, LBL) : pad('', LBL);
+-            bytes.push(...textToBytes('|' + lbl + '|'));
+-            push(ESC, 0x45, 0x01);
+-            bytes.push(...textToBytes(' ' + pad(chunk, maxV) + '|'));
+-            push(ESC, 0x45, 0x00);
+-            push(LF);
+-          });
+-        };
+-
+-        // minLines: en az bu kadar satir basilir (bos satir ile doldurulur)
+-        // maxLines: fazlasi kesilir
+-        const paddedBoldValueRow = (label, value, minLines, maxLines) => {
+-          const maxV = VAL - 1;
+-          const valStr = (value || '').toString();
+-          let chunks = [];
+-          if (valStr.length === 0) {
+-            chunks = [''];
+-          } else {
+-            for (let i = 0; i < valStr.length; i += maxV)
+-              chunks.push(valStr.substring(i, i + maxV));
+-          }
+-          // Max satir kap
+-          chunks = chunks.slice(0, maxLines);
+-          // Min satire tamamla (bos satir ile)
+-          while (chunks.length < minLines) chunks.push('');
+-
+-          chunks.forEach((chunk, idx) => {
+-            const lbl = idx === 0 ? pad(label, LBL) : pad('', LBL);
+-            bytes.push(...textToBytes('|' + lbl + '|'));
+-            push(ESC, 0x45, 0x01);
+-            bytes.push(...textToBytes(' ' + pad(chunk, maxV) + '|'));
+-            push(ESC, 0x45, 0x00);
+-            push(LF);
+-          });
+-        };
+-
+-        // === BASLIK: Gaziburma Logosu ÔÇö ESC * (ESC a 1 ile ortalanir) ===
+-        try {
+-          const { nativeImage } = require('electron');
+-          const logoPath = require('path').join(__dirname, '..', 'Gaziburma Logo (1458x625).png');
+-          // 300 sutun ~ 42mm @ 180dpi; 58mm kagit ortasinda g├Âz├╝k├╝r
+-          const COLS = 300;
+-          const logoH = Math.round(COLS * 625 / 1458); // ~128 piksel
+-          const img = nativeImage.createFromPath(logoPath)
+-            .resize({ width: COLS, height: logoH, quality: 'better' });
+-          const size = img.getSize();
+-          const rgba = img.getBitmap();
+-
+-          // ESC a 1: orta hizala
+-          push(ESC, 0x61, 0x01);
+-          // ESC 3 24: satir araligini tam 24 noktaya ayarla (serit yuksekligi)
+-          // Bu olmadan LF varsayilan aralikla ka─şidi ilerletir => seritler arasinda bosluk!
+-          push(ESC, 0x33, 24);
+-
+-          // ESC * mode 33 = 24-nokta cift yogunluk; 3 byte/sutun
+-          const STRIP = 24;
+-          for (let startRow = 0; startRow < size.height; startRow += STRIP) {
+-            push(ESC, 0x2A, 33, COLS & 0xFF, (COLS >> 8) & 0xFF);
+-            for (let col = 0; col < COLS; col++) {
+-              let b0 = 0, b1 = 0, b2 = 0;
+-              for (let dot = 0; dot < STRIP; dot++) {
+-                const row = startRow + dot;
+-                if (row < size.height) {
+-                  const idx = (row * size.width + col) * 4;
+-                  const r = rgba[idx], g = rgba[idx + 1], bv = rgba[idx + 2], a = rgba[idx + 3];
+-                  const gray = a < 128 ? 255 : Math.round(0.299 * r + 0.587 * g + 0.114 * bv);
+-                  if (gray < 128) {
+-                    if (dot < 8) b0 |= (0x80 >> dot);
+-                    else if (dot < 16) b1 |= (0x80 >> (dot - 8));
+-                    else b2 |= (0x80 >> (dot - 16));
+-                  }
+-                }
+-              }
+-              push(b0, b1, b2);
+-            }
+-            push(LF);
+-          }
+-
+-          push(ESC, 0x32);        // Varsayilan satir araligina geri don (ESC 2)
+-          push(ESC, 0x61, 0x00);  // Sol hiza
+-          // Logo ile ┼şablon aras─▒nda bo┼şluk YOK (biti┼şik)
+-        } catch (e) {
+-          push(ESC, 0x61, 0x01);
+-          push(ESC, 0x45, 0x01);
+-          line('gaziburma');
+-          push(ESC, 0x45, 0x00);
+-          push(ESC, 0x61, 0x00);
+-        }
+-
+-        // === HEADER TEK H├£CRE (2 sat─▒r) ÔÇö ortada | yok ===
+-        // ├£st yatay ├ğizgi ÔÇö k├Â┼şeler | ile temiz
+-        line('|' + '-'.repeat(W - 2) + '|');
+-        // ─░├ğ geni┼şlik = W-2 = 46 char. Sol b├Âlge = LBL(17), Sa─ş b├Âlge = W-2-LBL(29)
+-        const hdrR = W - 2 - LBL; // 29 char ÔÇö sa─ş yaz─▒ b├Âlgesi (i├ğ | yok)
+-        // Satir 1: Gaziburma ortali | Hat numarasi sag yali
+-        const headerPhoneStr = fmtPhone(callerPhone || '').substring(0, hdrR).trim();
+-        line('|' + center('Gaziburma', LBL) + rjust(headerPhoneStr, hdrR) + '|');
+-        // Sat─▒r 2: Mustafa sol b├Âlge ortas─▒ | Pendik 4mm (~3 char) sa─şa kayd─▒r─▒lm─▒┼ş ÔÇö TEK H├£CRE
+-        line('|' + center('Mustafa', LBL) + pad('   Pendik', hdrR) + '|');
+-        line(hLine());
+-
+-        // === S─░PAR─░┼Ş TAR─░H─░ ÔÇö de─şer bold ===
+-        boldValueRow('Siparis Tarihi:', `${tarih} ${saat}`);
+-        line(hLine());
+-
+-        // === TESL─░MAT TAR─░H─░ ===
+-        dataRow('Teslimat Tarihi:', '').forEach(r => line(r));
+-        line(hLine());
+-
+-        // === TEL -- deger bold, formatli ===
+-        // 'Veri Bekleniyor' veya 'Bilinmiyor' placeholder metinleri fi┼şe BO┼Ş olarak bas─▒l─▒r
+-        const PLACEHOLDERS = ['Veri Bekleniyor', 'Bilinmiyor', 'Waiting for Data', 'Unknown'];
+-        const cleanPhone   = (PLACEHOLDERS.includes(phone)   || !phone)   ? '' : phone;
+-        const cleanName    = (PLACEHOLDERS.includes(name)    || !name)    ? '' : name;
+-        const cleanAddress = (PLACEHOLDERS.includes(address) || !address) ? '' : address;
+-
+-        boldValueRow('Tel:', fmtPhone(cleanPhone));
+-        line(hLine());
+-
+-        // === S─░PAR─░┼Ş VEREN ===
+-        dataRow('Siparis Veren:', '').forEach(r => line(r));
+-        line(hLine());
+-
+-        // === ALICI: min 1 satir, max 4 satir ===
+-        paddedBoldValueRow('Alici:', cleanName, 1, 4);
+-        line(hLine());
+-
+-        // === ADRES: min 2 satir, max 10 satir ===
+-        paddedBoldValueRow('Adres:', cleanAddress, 2, 10);
+-        line(hLine());
+-
+-        // === TESL─░MAT | TUTAR BA┼ŞLIK ===
+-        push(ESC, 0x45, 0x01);
+-        line(colsRow('Teslimat', 'Tutar'));
+-        push(ESC, 0x45, 0x00);
+-        line(hLineCols());
+-
+-        // === BOS SIPARIS ALANI (20 satir) ===
+-        for (let i = 0; i < 20; i++) {
+-          line('|' + ' '.repeat(CAL) + '|' + ' '.repeat(CAR) + '|');
+-        }
+-
+-        // Alt kapan─▒┼ş
+-        line(hLineCols());
+-
+-        // Ka─ş─▒t ilerlet + kes (~10mm hassas besleme, sonra kesme)
+-        // 177ÔåÆ71: 15mm azalt─▒ld─▒ (├╝st bo┼şlu─şu k─▒saltmak i├ğin sonraki bask─▒ya yans─▒r)
+-        push(ESC, 0x4A, 71);     // ESC J 71: ka─ş─▒d─▒ ~10mm ilerlet
+-        push(GS, 0x56, 0x42, 0x00);
+-
+-        return Buffer.from(bytes);
+-      };
+-
+-
+-      const receiptBuf = Buffer.concat([buildReceipt(), buildReceipt()]); // 2 kopya
+-      const ts = Date.now();
+-      const binPath = path.join(os.tmpdir(), `siparis_escpos_${ts}.bin`);
+-      fs.writeFileSync(binPath, receiptBuf);
+-
+-      // winspool.drv ├╝zerinden RAW yazd─▒rma ÔÇö DLL cache ile h─▒zl─▒ (ilk bask─▒da derlenir, sonraki bask─▒lar ~100ms)
+-      const psScript = getRawPrinterPsHeader() + `
+-$printerName = '${selectedPrinter.replace(/'/g, "''")}'
+-$bytes = [System.IO.File]::ReadAllBytes("${binPath.replace(/\\/g, '\\\\')}")
+-
+-$hPrinter = [IntPtr]::Zero
+-$di = New-Object RawPrinterCore+DOCINFOA
+-$di.pDocName  = "SIPARIS_FISI"
+-$di.pDataType = "RAW"
+-
+-if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero)) {
+-    [RawPrinterCore]::StartDocPrinter($hPrinter, 1, $di) | Out-Null
+-    [RawPrinterCore]::StartPagePrinter($hPrinter) | Out-Null
+-    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+-    [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)
+-    $written = 0
+-    [RawPrinterCore]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written) | Out-Null
+-    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+-    [RawPrinterCore]::EndPagePrinter($hPrinter) | Out-Null
+-    [RawPrinterCore]::EndDocPrinter($hPrinter) | Out-Null
+-    [RawPrinterCore]::ClosePrinter($hPrinter) | Out-Null
+-}
+-
+-Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction SilentlyContinue
+-`;
+-
+-      const psPath = path.join(os.tmpdir(), `siparis_print_${ts}.ps1`);
+-      fs.writeFileSync(psPath, psScript, 'utf-8');
+-
+-      return new Promise((resolve) => {
+-        child_process.execFile(
+-          'powershell',
+-          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
+-          { timeout: 30000 },
+-          (err) => {
+-            try { fs.unlinkSync(psPath); } catch (e) { }
+-            if (err) {
+-              console.error('[Print] RAW yazd─▒rma hatas─▒:', err);
+-              resolve({ success: false, error: err.message });
+-            } else {
+-              console.log('[Print] ESC/POS RAW yazd─▒rma ba┼şar─▒l─▒.');
+-              resolve({ success: true });
+-            }
+-          }
+-        );
+-      });
+-
+-    } catch (error) {
+-      console.error('[Print] ─░stisna:', error);
+-      return { success: false, error: error.message };
+-    }
+-  });
+-
+-
+-
+-  // ====== SINAMA SAYFASI YAZDIRMA (ESC/POS RAW PROTOCOL) ======
+-  ipcMain.handle('print-test-page', async (event, printerName) => {
+-    try {
+-      console.log('[TestPrint] ESC/POS RAW s─▒nama sayfas─▒:', printerName);
+-
+-      const tarih = new Date().toLocaleDateString('tr-TR');
+-      const saat = new Date().toLocaleTimeString('tr-TR');
+-      const LINE_WIDTH = 42;
+-
+-      const ESC = 0x1B;
+-      const GS = 0x1D;
+-      const LF = 0x0A;
+-      const sepLine = Array(LINE_WIDTH).fill(0x2D);
+-      // PC857 T├╝rk├ğe kod sayfas─▒ ÔÇö ESC t 0x12 ile e┼şle┼şir
+-      // Eski 'binary' encode: ┼şÔåÆ'_', ─şÔåÆbo┼ş karakter hatalar─▒n─▒ d├╝zeltir
+-      // Turkce karakterler ASCII karsiliklarina donusturulur (yazici uyumlulugu)
+-      const normalizeTR = (str) => (str || '').toString()
+-        .replace(/\u015f/g, 's').replace(/\u015e/g, 'S')
+-        .replace(/\u011f/g, 'g').replace(/\u011e/g, 'G')
+-        .replace(/\u0131/g, 'i').replace(/\u0130/g, 'I')
+-        .replace(/\u00e7/g, 'c').replace(/\u00c7/g, 'C')
+-        .replace(/\u00f6/g, 'o').replace(/\u00d6/g, 'O')
+-        .replace(/\u00fc/g, 'u').replace(/\u00dc/g, 'U')
+-        .replace(/\u00e2/g, 'a').replace(/\u00ea/g, 'e')
+-        .replace(/\u00ee/g, 'i').replace(/\u00f4/g, 'o')
+-        .replace(/\u00fb/g, 'u').replace(/\u00e0/g, 'a');
+-      const textToBytes = (str) => {
+-        const s = normalizeTR(str);
+-        const result = [];
+-        for (let i = 0; i < s.length; i++) result.push(s.charCodeAt(i) & 0x7F);
+-        return result;
+-      };
+-
+-      const bytes = [];
+-      const push = (...args) => args.forEach(b => bytes.push(b));
+-      const pushArr = (arr) => arr.forEach(b => bytes.push(b));
+-
+-      push(ESC, 0x40); // Init
+-      push(ESC, 0x74, 0x12); // PC857 T├╝rk├ğe kod sayfas─▒
+-
+-      // Ba┼şl─▒k (Ortal─▒, B├╝y├╝k, Kal─▒n)
+-      push(ESC, 0x61, 0x01); // orta
+-      push(ESC, 0x45, 0x01); // bold
+-      push(ESC, 0x21, 0x30); // Double width/height
+-      pushArr(textToBytes('SINAMA SAYFASI'));
+-      push(LF);
+-      push(ESC, 0x21, 0x00); // normal
+-      push(ESC, 0x45, 0x00); // bold off
+-
+-      push(ESC, 0x61, 0x01);
+-      pushArr(textToBytes('Caller ID Sistemi'));
+-      push(LF);
+-      push(ESC, 0x61, 0x00); // sola
+-
+-      pushArr(sepLine); push(LF);
+-
+-      pushArr(textToBytes(`Yazici: ${printerName}`)); push(LF);
+-      pushArr(textToBytes(`Tarih:  ${tarih}`)); push(LF);
+-      pushArr(textToBytes(`Saat:   ${saat}`)); push(LF);
+-
+-      pushArr(sepLine); push(LF);
+-
+-      // Mesaj sat─▒rlar─▒
+-      const msg = "Bu yaziyi okuyabiliyorsaniz; Yazici bilgisayariniza nizami bir sekilde kurulmus, 'Caller ID' programina tanitilmis ve stabil bir sekilde calisiyordur.";
+-      for (let i = 0; i < msg.length; i += LINE_WIDTH) {
+-        pushArr(textToBytes(msg.substring(i, i + LINE_WIDTH)));
+-        push(LF);
+-      }
+-
+-      pushArr(sepLine); push(LF);
+-
+-      // Ka─ş─▒t ilerlet + Kes
+-      for (let i = 0; i < 10; i++) push(LF);
+-      push(GS, 0x56, 0x42, 0x00);
+-
+-      const testBuf = Buffer.from(bytes);
+-      const ts = Date.now();
+-      const binPath = path.join(os.tmpdir(), `test_escpos_${ts}.bin`);
+-      fs.writeFileSync(binPath, testBuf);
+-
+-      // DLL cache ile h─▒zl─▒ RAW yazd─▒rma
+-      const psScript = getRawPrinterPsHeader() + `
+-$printerName = '${printerName.replace(/'/g, "''")}'
+-$bytes = [System.IO.File]::ReadAllBytes("${binPath.replace(/\\/g, '\\\\')}")
+-$hPrinter = [IntPtr]::Zero
+-$di = New-Object RawPrinterCore+DOCINFOA
+-$di.pDocName  = "TEST_PAGE"
+-$di.pDataType = "RAW"
+-if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero)) {
+-    [RawPrinterCore]::StartDocPrinter($hPrinter, 1, $di) | Out-Null
+-    [RawPrinterCore]::StartPagePrinter($hPrinter) | Out-Null
+-    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+-    [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)
+-    $written = 0
+-    [RawPrinterCore]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written) | Out-Null
+-    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+-    [RawPrinterCore]::EndPagePrinter($hPrinter) | Out-Null
+-    [RawPrinterCore]::EndDocPrinter($hPrinter) | Out-Null
+-    [RawPrinterCore]::ClosePrinter($hPrinter) | Out-Null
+-}
+-Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction SilentlyContinue
+-`;
+-
+-      const psPath = path.join(os.tmpdir(), `test_print_${ts}.ps1`);
+-      fs.writeFileSync(psPath, psScript, 'utf-8');
+-
+-      return new Promise((resolve) => {
+-        child_process.execFile(
+-          'powershell',
+-          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],
+-          { timeout: 30000 },
+-          (err) => {
+-            try { fs.unlinkSync(psPath); } catch (e) { }
+-            if (err) {
+-              console.error('[TestPrint] RAW hatas─▒:', err);
+-              resolve({ success: false, error: err.message });
+-            } else {
+-              console.log('[TestPrint] ESC/POS RAW s─▒nama ba┼şar─▒l─▒.');
+-              resolve({ success: true });
+-            }
+-          }
+-        );
+-      });
+-
+-    } catch (error) {
+-      console.error('[TestPrint] ─░stisna:', error);
+-      return { success: false, error: error.message };
+-    }
+-  });
+-
+-
+-});
+-
+-
+-
+-app.on('window-all-closed', () => {
+-
+-  if (process.platform !== 'darwin') app.quit();
+-});
+-
+-ipcMain.on('ping', (event, arg) => {
+-  console.log('React (Frontend) taraf─▒ndan mesaj al─▒nd─▒:', arg);
+-  event.reply('pong', 'Electron (Backend) ileti┼şim kurdu!');
+-});
+-
+-// Pencere Kontrol IPC'leri
+-ipcMain.on('window-minimize', () => {
+-  if (mainWindow) mainWindow.minimize();
+-});
+-
+-ipcMain.on('window-maximize', () => {
+-  if (mainWindow) {
+-    if (mainWindow.isMaximized()) {
+-      mainWindow.unmaximize();
+-    } else {
+-      mainWindow.maximize();
+-    }
+-  }
+-});
+-
+-ipcMain.on('window-close', () => {
+-  if (mainWindow) mainWindow.close();
+-});
+-
+-ipcMain.on('open-external', (event, url) => {
+-  shell.openExternal(url);
+-});
+-
+-ipcMain.on('save-app-state', (event, state) => {
+-  stateStore.save(state);
+-});
+-
+-ipcMain.handle('get-app-state', () => {
+-  return stateStore.load();
+-});
+-
+-ipcMain.handle('get-usb-status', () => {
+-  return bridgeProcess !== null;
+-});
++´╗┐const { app, BrowserWindow, ipcMain, shell } = require('electron');const path = require('path');const os = require('os');const fs = require('fs');const crypto = require('crypto');const child_process = require('child_process');const https = require('https');// const HID = require('node-hid'); // ArtÔöÇÔûÆk C# Bridge kullanÔöÇÔûÆyoruzconst callerIdParser = require('./callerIdParser.js').default || require('./callerIdParser.js');const stateStore = require('./stateStore.js');const { verifyLicense, readLocalLicense } = require('./licenseCheck.js');// Vite'nin varsayÔöÇÔûÆlan geliÔö╝┼ştirme sunucusu portuconst isDev = process.env.NODE_ENV === 'development';// ====== ELECTRON-UPDATER (GitHub Auto-Update) ======// Sadece Ôö£ÔòØretim modunda aktif ├ö├ç├Â dev modunda devre dÔöÇÔûÆÔö╝┼şÔöÇÔûÆ bÔöÇÔûÆrakÔöÇÔûÆlÔöÇÔûÆr.let autoUpdater = null;if (!isDev) {  try {    autoUpdater = require('electron-updater').autoUpdater;    autoUpdater.autoDownload = false;       // KullanÔöÇÔûÆcÔöÇÔûÆ onayÔöÇÔûÆ olmadan indirme    autoUpdater.autoInstallOnAppQuit = true;    autoUpdater.logger = null;    // Private repo eriÔö╝┼şimi iÔö£─şin token (repo gizli olduÔöÇ┼şundan gÔö£ÔòØvenli)    autoUpdater.setFeedURL({      provider: 'github',      owner: 'kaya-ahmet-85',      repo: 'Caller-ID-Gaziburma-Updater',      private: true,      token: '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'    });  } catch (e) {    console.warn('[Updater] electron-updater yÔö£ÔòØklenemedi:', e.message);  }}// ====== RAW YAZICI DLL CACHE ======// C# kodu her seferinde derlenmek yerine bir kez derlenir ve DLL olarak kaydedilir.// Sonraki Ôö£─şaÔöÇ┼şrÔöÇÔûÆlarda sadece DLL yÔö£ÔòØklenir (~100ms vs ~3-5sn derleme sÔö£ÔòØresi).let rawPrinterDllPath = null; // app.getPath('userData') app.ready sonrasÔöÇÔûÆ kullanÔöÇÔûÆlabilir// TÔö£ÔòØm PS scriptleri iÔö£─şin ortak RawPrinterCore tanÔöÇÔûÆmÔöÇÔûÆnÔöÇÔûÆ yÔö£ÔòØkleyen PS baÔö╝┼şlÔöÇÔûÆÔöÇ┼şÔöÇÔûÆconst getRawPrinterPsHeader = () => {  const dllPath = rawPrinterDllPath.replace(/\\/g, '\\\\');  return `$dllPath = "${dllPath}"$typeDef = @'using System;using System.Runtime.InteropServices;public class RawPrinterCore {    [DllImport("winspool.drv", CharSet=CharSet.Ansi)]    public static extern bool OpenPrinter(string pPrinterName, out IntPtr hPrinter, IntPtr pDefault);    [DllImport("winspool.drv")]    public static extern bool ClosePrinter(IntPtr hPrinter);    [DllImport("winspool.drv", CharSet=CharSet.Ansi)]    public static extern int StartDocPrinter(IntPtr hPrinter, int Level, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOA di);    [DllImport("winspool.drv")]    public static extern bool EndDocPrinter(IntPtr hPrinter);    [DllImport("winspool.drv")]    public static extern bool StartPagePrinter(IntPtr hPrinter);    [DllImport("winspool.drv")]    public static extern bool EndPagePrinter(IntPtr hPrinter);    [DllImport("winspool.drv")]    public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]    public class DOCINFOA {        [MarshalAs(UnmanagedType.LPStr)] public string pDocName;        [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;        [MarshalAs(UnmanagedType.LPStr)] public string pDataType;    }}'@if (-not (Test-Path $dllPath)) {    Add-Type -TypeDefinition $typeDef -OutputAssembly $dllPath -ErrorAction Stop}Add-Type -Path $dllPath -ErrorAction Stop`;};let mainWindow;function createWindow() {  mainWindow = new BrowserWindow({    width: 1280,    height: 800,    minWidth: 1024,    minHeight: 768,    frame: false, // Ôö£├ğerÔö£─şeveyi kaldÔöÇÔûÆr    transparent: false,    show: false,    // Ôö£├╗nce kapalÔöÇÔûÆ baÔö╝┼şlatÔöÇÔûÆp sonra maximize edeceÔöÇ┼şiz    webPreferences: {      nodeIntegration: false,      contextIsolation: true,      preload: path.join(__dirname, '../electron/preload.cjs')    }  });  // Ôö£┬úst menÔö£ÔòØ Ôö£─şubuÔöÇ┼şunu tamamen kaldÔöÇÔûÆr (File, Edit vb.)  mainWindow.setMenu(null);  if (isDev) {    mainWindow.loadURL('http://localhost:5173');  } else {    mainWindow.loadFile(path.join(__dirname, '../dist', 'index.html'));  }  mainWindow.once('ready-to-show', () => {    mainWindow.maximize(); // Tam ekran (Maximize) baÔö╝┼şlat    mainWindow.show();    // ├ö├Â├ç├ö├Â├ç Otomatik GÔö£ÔòØncelleme KontrolÔö£ÔòØ ├ö├Â├ç├ö├Â├ç    // Ôö£┬úretim modunda pencere aÔö£─şÔöÇÔûÆldÔöÇÔûÆktan 30 saniye sonra GitHub'dan sÔö£ÔòØrÔö£ÔòØm kontrolÔö£ÔòØ yapar.    // Yeni sÔö£ÔòØrÔö£ÔòØm varsa ana pencereye bildirim gÔö£├énderir (toast olarak gÔö£├érÔö£ÔòØnÔö£ÔòØr).    if (!isDev) {      setTimeout(() => {        const GH_TOKEN = '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';        const options = {          hostname: 'api.github.com',          path: '/repos/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest',          method: 'GET',          headers: {            'Authorization': 'token ' + GH_TOKEN,            'User-Agent': 'CallerIDApp',            'Accept': 'application/vnd.github.v3+json'          }        };        const req = https.request(options, (res) => {          let data = '';          res.on('data', (chunk) => { data += chunk; });          res.on('end', () => {            try {              const release = JSON.parse(data);              const latestTag = release.tag_name; // Ôö£├érn: "v1.2.8"              if (!latestTag) return;              const latestVersion = latestTag.replace(/^v/i, ''); // "1.2.8"              const currentVersion = app.getVersion();            // "1.2.7"              // Semver karÔö╝┼şÔöÇÔûÆlaÔö╝┼ştÔöÇÔûÆrmasÔöÇÔûÆ: sadece GERÔö£├ğEKTEN daha yeni bir sÔö£ÔòØrÔö£ÔòØm varsa bildir              const isNewer = (latest, current) => {                const a = latest.split('.').map(Number);                const b = current.split('.').map(Number);                for (let i = 0; i < 3; i++) {                  if ((a[i] || 0) > (b[i] || 0)) return true;                  if ((a[i] || 0) < (b[i] || 0)) return false;                }                return false;              };              if (isNewer(latestVersion, currentVersion)) {                console.log(`[AutoUpdate] Yeni sÔö£ÔòØrÔö£ÔòØm bulundu: ${latestVersion} (mevcut: ${currentVersion})`);                if (mainWindow && !mainWindow.isDestroyed()) {                  mainWindow.webContents.send('auto-update-available', {                    latestVersion: `v${latestVersion}`,                    currentVersion: `v${currentVersion}`,                    releaseNotes: release.body || '',                    url: release.html_url || 'https://github.com/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest',                    updateAvailable: true                  });                }              } else {                console.log('[AutoUpdate] GÔö£ÔòØncel sÔö£ÔòØrÔö£ÔòØm kullanÔöÇÔûÆmda:', currentVersion);              }            } catch (parseErr) {              console.log('[AutoUpdate] JSON parse hatasÔöÇÔûÆ:', parseErr.message);            }          });        });        req.on('error', (e) => {          console.log('[AutoUpdate] BaÔöÇ┼şlantÔöÇÔûÆ hatasÔöÇÔûÆ:', e.message);        });        req.end();      }, 30000); // 30 saniye bekle    }  });  mainWindow.on('closed', () => {    mainWindow = null;  });}// ====== MODAL PENCERE YARDIMCI FONKSÔöÇÔûæYONU ======// ÔöÇÔûæleride eklenecek tÔö£ÔòØm alt pencereler (Ayarlar, YardÔöÇÔûÆm, vb.) bu fonksiyon ile oluÔö╝┼şturulmalÔöÇÔûÆdÔöÇÔûÆr.// Bu sayede her alt pencere otomatik olarak modal olur ve ana pencereyi bloklar.// Ana pencereye tÔöÇÔûÆklanÔöÇÔûÆrsa Windows otomatik hata sesi Ôö£─şalar.function createChildWindow(options = {}) {  const childWindow = new BrowserWindow({    width: options.width || 900,    height: options.height || 600,    minWidth: options.minWidth || 700,    minHeight: options.minHeight || 500,    parent: mainWindow,    // Ana pencereye baÔöÇ┼şla    modal: true,           // Modal yap (Ana pencere bloklanÔöÇÔûÆr, tÔöÇÔûÆklanÔöÇÔûÆrsa sistem sesi Ôö£─şalar)    frame: false,    transparent: false,    show: false,    webPreferences: {      nodeIntegration: false,      contextIsolation: true,      preload: path.join(__dirname, '../electron/preload.cjs')    }  });  childWindow.setMenu(null);  // URL veya hash route yÔö£ÔòØkle  if (options.route) {    if (isDev) {      childWindow.loadURL(`http://localhost:5173/#/${options.route}`);    } else {      const distPath = path.join(__dirname, '../dist', 'index.html');      childWindow.loadURL(`file://${distPath}#/${options.route}`);    }  }  childWindow.once('ready-to-show', () => {    childWindow.show();  });  return childWindow;}// ====== C# BRIDGE CALLER ID ENTEGRASYONU ======const { spawn } = require('child_process');let bridgeProcess = null;function connectToCallerId() {  // Dev modunda src-electron/bridge/, Ôö£ÔòØretim modunda resources/bridge/  const bridgePath = isDev    ? path.join(__dirname, 'bridge/GCallerIDBridge.exe')    : path.join(process.resourcesPath, 'bridge/GCallerIDBridge.exe');  console.log('Caller ID Bridge baÔö╝┼şlatÔöÇÔûÆlÔöÇÔûÆyor:', bridgePath);  try {    bridgeProcess = spawn(bridgePath, [], {      cwd: path.dirname(bridgePath)    });    bridgeProcess.stdout.on('data', (data) => {      const output = data.toString();      // SatÔöÇÔûÆrlarÔöÇÔûÆ \r\n veya \n formatÔöÇÔûÆna gÔö£├ére ayÔöÇÔûÆrÔöÇÔûÆp her birini trim et      const lines = output.split(/\r?\n/);      lines.forEach(line => {        const trimmed = line.trim();        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {          callerIdParser.handleBridgeData(trimmed);        } else if (trimmed) {          console.log('[Bridge Log]:', trimmed);        }      });    });    bridgeProcess.stderr.on('data', (data) => {      console.error('[Bridge Error]:', data.toString());    });    bridgeProcess.on('close', (code) => {      console.log(`Bridge sÔö£ÔòØreci kapandÔöÇÔûÆ (Kod: ${code}). 3 saniye sonra yeniden denenecek...`);      bridgeProcess = null;      if (mainWindow) mainWindow.webContents.send('usb-status', false);      setTimeout(connectToCallerId, 3000);    });    if (mainWindow) mainWindow.webContents.send('usb-status', true);  } catch (error) {    console.error('Bridge baÔö╝┼şlatÔöÇÔûÆlamadÔöÇÔûÆ:', error);    if (mainWindow) mainWindow.webContents.send('usb-status', false);    setTimeout(connectToCallerId, 5000);  }}console.log("ELECTRON OBJESI:", require('electron'));app.whenReady().then(() => {  // DLL cache yolunu app.userData altÔöÇÔûÆnda tanÔöÇÔûÆmla (app ready sonrasÔöÇÔûÆ kullanÔöÇÔûÆlabilir)  rawPrinterDllPath = path.join(app.getPath('userData'), 'raw_printer_core.dll');  console.log('[RawPrinter] DLL cache yolu:', rawPrinterDllPath);  // ├ö├Â├ç├ö├Â├ç LÔöÇÔûæSANS KONTROLÔö£┬ú ├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç  let licenseWindow = null;  const openLicenseWindow = () => {    licenseWindow = new BrowserWindow({      width: 500, height: 500,      resizable: false,      frame: false,      webPreferences: {        nodeIntegration: false,        contextIsolation: true,        preload: path.join(__dirname, '../electron/preload.cjs')      }    });    licenseWindow.setMenu(null);    licenseWindow.loadFile(path.join(__dirname, 'license-activation.html'));    licenseWindow.on('closed', () => { licenseWindow = null; });  };  // activate-license: lisans aktivasyon penceresinden gelen doÔöÇ┼şrulama isteÔöÇ┼şi  ipcMain.handle('activate-license', async (event, key) => {    const result = await verifyLicense(key);    return result;  });  // license-success: aktivasyon baÔö╝┼şarÔöÇÔûÆlÔöÇÔûÆ ├ö├Ñ├å pencereyi kapat, ana uygulamayÔöÇÔûÆ aÔö£─ş  ipcMain.on('license-success', () => {    if (licenseWindow) { licenseWindow.close(); licenseWindow = null; }    if (!mainWindow) {      createWindow();      connectToCallerId();    } else {      mainWindow.show();    }  });  // Lisans kontrolÔö£ÔòØ: yerel cache varsa hÔöÇÔûÆzlÔöÇÔûÆ doÔöÇ┼şrula, yoksa aktivasyon penceresini aÔö£─ş  // DEV_MODE bypass: BaÔö╝┼şlat.bat'tan SET DEV_MODE=true ile baÔö╝┼şlatÔöÇÔûÆlmÔöÇÔûÆÔö╝┼şsa lisans atlanÔöÇÔûÆr.  // Bu deÔöÇ┼şiÔö╝┼şken sadece geliÔö╝┼ştirici ortamÔöÇÔûÆnda tanÔöÇÔûÆmlÔöÇÔûÆdÔöÇÔûÆr; kurulu .exe'de asla mevcut deÔöÇ┼şildir.  if (process.env.DEV_MODE === 'true') {    console.log('[License] DEV_MODE aktif ├ö├ç├Â lisans kontrolÔö£ÔòØ atlanÔöÇÔûÆyor.');    createWindow();    connectToCallerId();  } else {    const local = readLocalLicense();    if (local && local.licenseKey) {      console.log('[License] KayÔöÇÔûÆtlÔöÇÔûÆ lisans bulundu, doÔöÇ┼şrulanÔöÇÔûÆyor...');      verifyLicense(local.licenseKey).then(result => {        if (result.valid) {          console.log('[License] Lisans geÔö£─şerli ├ö├ç├Â ana pencere aÔö£─şÔöÇÔûÆlÔöÇÔûÆyor.');          createWindow();          connectToCallerId();        } else {          console.warn('[License] Lisans geÔö£─şersiz:', result.message);          openLicenseWindow();        }      });    } else {      console.log('[License] KayÔöÇÔûÆtlÔöÇÔûÆ lisans yok ├ö├ç├Â aktivasyon penceresi aÔö£─şÔöÇÔûÆlÔöÇÔûÆyor.');      openLicenseWindow();    }  }  // Parser'dan gelen onRing eventini React'a dinletmek  callerIdParser.on('onRing', (callData) => {    if (mainWindow) {      mainWindow.webContents.send('caller-id-data', callData);    }  });  callerIdParser.on('onIdle', (idleData) => {    if (mainWindow) {      mainWindow.webContents.send('caller-id-data', idleData);    }  });  callerIdParser.on('sync-status', (syncInfo) => {    if (mainWindow) {      mainWindow.webContents.send('sync-status', syncInfo);    }  });  callerIdParser.on('global-data-updated', () => {    if (mainWindow) {      mainWindow.webContents.send('global-data-updated');    }  });  // Parser'dan gelen USB durum deÔöÇ┼şiÔö╝┼şikliklerini arayÔö£ÔòØze ilet  callerIdParser.on('usb-status', (status) => {    if (mainWindow) {      mainWindow.webContents.send('usb-status', status);    }  });  // ÔöÇÔûænternet durumunu ana sÔö£ÔòØreÔö£─şten de kontrol edelim (ArayÔö£ÔòØz bazen yakalayamÔöÇÔûÆyor)  setInterval(() => {    const isOnline = require('electron').net.isOnline();    if (mainWindow) {      mainWindow.webContents.send('internet-status', isOnline);    }  }, 5000);  app.on('activate', () => {    if (BrowserWindow.getAllWindows().length === 0) createWindow();  });  ipcMain.handle('manual-refresh', async (event, { lineLabel, phone }) => {    return await callerIdParser.manualRefresh(lineLabel, phone);  });  ipcMain.handle('lookup-customer', (event, phone) => {    return callerIdParser.lookupCustomer(phone);  });  ipcMain.handle('force-sync', () => {    callerIdParser.forceSync();  });  ipcMain.handle('advanced-search', (event, query) => {    return callerIdParser.searchDatabase(query);  });  // ====== MODAL PENCERE GÔö£├╗RSEL UYARI (KIRMIZI GÔö£├╗LGE) ======  // ====== MÔö£┬úÔö╝┼ŞTERÔöÇÔûæ DÔö£┬úZENLEME PENCERESÔöÇÔûæ (Electron BrowserWindow) ======  // Sistem tarayÔöÇÔûÆcÔöÇÔûÆsÔöÇÔûÆ yerine Electron penceresi kullanÔöÇÔûÆlÔöÇÔûÆr; bÔö£├éylece sayfa  // yÔö£ÔòØklendikten sonra executeJavaScript() ile Ajax filtresi tetiklenebilir.  ipcMain.on('open-customer-edit', (event, { customerId, phone }) => {    const BASE_URL = "https://gaziburma.com/api/index.php?anahtar=;_u9uhe!M5%3C:pMB^";    const editWin = new BrowserWindow({      width: 1280,      height: 860,      minWidth: 900,      minHeight: 600,      title: 'Gaziburma Web ArayÔö£ÔòØzÔö£ÔòØ',      webPreferences: {        nodeIntegration: false,        contextIsolation: true      }    });    editWin.setMenu(null);    editWin.maximize();          // Tam ekran (Maximize) olarak aÔö£─ş    editWin.loadURL(BASE_URL);    // Sayfa tamamen yÔö£ÔòØklenince filtre JS'ini enjekte et    // 600ms gecikme: DataTables init + Ajax tablo verisi yÔö£ÔòØklenmesi iÔö£─şin bekliyoruz    editWin.webContents.on('did-finish-load', () => {      // Telefon numarasÔöÇÔûÆnÔöÇÔûÆ her zaman kullan (ID gÔö£ÔòØvenilir deÔöÇ┼şil)      // VirgÔö£ÔòØllÔö£ÔòØ Ôö£─şoklu numaralarda sadece ilkini al: "0533...,0212..." ├ö├Ñ├å "0533..."      const rawPhone = phone && phone !== 'Veri Bekleniyor' && phone !== 'Bilinmiyor'        ? String(phone).split(/[,;\s]+/)[0].trim()        : null;      if (!rawPhone) return;      setTimeout(() => {        const jsCode = `          (function() {            var phoneInput = document.querySelector("input.col-search-input[placeholder='MÔö£ÔòØÔö╝┼şteri Telefon NumarasÔöÇÔûÆ']");            if (!phoneInput) {              console.warn('[CallerID] Telefon arama kutusu bulunamadÔöÇÔûÆ!');              return;            }            phoneInput.value = ${JSON.stringify(rawPhone)};            phoneInput.dispatchEvent(new Event('input',  { bubbles: true }));            phoneInput.dispatchEvent(new Event('change', { bubbles: true }));            phoneInput.dispatchEvent(new KeyboardEvent('keyup', {              bubbles: true, cancelable: true,              key: 'Enter', code: 'Enter', keyCode: 13, which: 13            }));            console.log('[CallerID] Telefon filtresi tetiklendi:', ${JSON.stringify(rawPhone)});          })();        `;        editWin.webContents.executeJavaScript(jsCode).catch(err => {          console.error('[EditCustomer] JS enjeksiyon hatasÔöÇÔûÆ:', err.message);        });      }, 600);    });    editWin.on('closed', () => { /* temizlik gerekmez */ });  });  // ====== MODAL PENCERE GÔö£├╗RSEL UYARI (KIRMIZI GÔö£├╗LGE) ======  // Modal pencere aÔö£─şÔöÇÔûÆkken kullanÔöÇÔûÆcÔöÇÔûÆ arka planÔöÇÔûÆ tÔöÇÔûÆkladÔöÇÔûÆÔöÇ┼şÔöÇÔûÆnda, OS sesli uyarÔöÇÔûÆ verir.  // Bu fonksiyon ek olarak pencereye 'flash-alert' IPC mesajÔöÇÔûÆ gÔö£├éndererek  // frontend'de kÔöÇÔûÆrmÔöÇÔûÆzÔöÇÔûÆ gÔö£├élge CSS animasyonunu tetikler.  const flashAlertWindow = (win) => {    if (!win || win.isDestroyed()) return;    win.webContents.send('flash-alert');  };  // Ayarlar Penceresi (Modal - createChildWindow helper kullanÔöÇÔûÆlÔöÇÔûÆyor)  let settingsWindow = null;  ipcMain.on('open-settings', () => {    if (settingsWindow) {      if (settingsWindow.isMinimized()) settingsWindow.restore();      settingsWindow.focus();      return;    }    settingsWindow = createChildWindow({      width: 900, height: 750, minWidth: 800, minHeight: 650,      route: 'settings'    });    // Windows modal pencereye arka plan tÔöÇÔûÆklandÔöÇÔûÆÔöÇ┼şÔöÇÔûÆnda modal'a    // yeniden focus gÔö£├énderiyor ├ö├ç├Â bunu yakalÔöÇÔûÆyoruz.    // ÔöÇÔûælk aÔö£─şÔöÇÔûÆlÔöÇÔûÆÔö╝┼ştaki focus'u atlamak iÔö£─şin 900ms guard kullanÔöÇÔûÆlÔöÇÔûÆyor.    let settingsFocusReady = false;    setTimeout(() => { settingsFocusReady = true; }, 900);    const onSettingsFocus = () => { if (settingsFocusReady) flashAlertWindow(settingsWindow); };    settingsWindow.on('focus', onSettingsFocus);    settingsWindow.on('closed', () => {      settingsWindow.removeListener('focus', onSettingsFocus);      settingsWindow = null;    });  });  ipcMain.on('close-settings', () => {    if (settingsWindow) {      settingsWindow.close();    }  });  // YardÔöÇÔûÆm Penceresi (Modal - createChildWindow helper kullanÔöÇÔûÆlÔöÇÔûÆyor)  let helpWindow = null;  ipcMain.on('open-help', () => {    if (helpWindow) {      if (helpWindow.isMinimized()) helpWindow.restore();      helpWindow.focus();      return;    }    helpWindow = createChildWindow({      width: 850, height: 700, minWidth: 700, minHeight: 500,      route: 'help'    });    // AynÔöÇÔûÆ mekanizma: Help modal'a arka plan tÔöÇÔûÆklandÔöÇÔûÆÔöÇ┼şÔöÇÔûÆnda focus eventi yanÔöÇÔûÆ alÔöÇÔûÆnÔöÇÔûÆyor.    let helpFocusReady = false;    setTimeout(() => { helpFocusReady = true; }, 900);    const onHelpFocus = () => { if (helpFocusReady) flashAlertWindow(helpWindow); };    helpWindow.on('focus', onHelpFocus);    helpWindow.on('closed', () => {      helpWindow.removeListener('focus', onHelpFocus);      helpWindow = null;    });  });  ipcMain.on('close-help', () => {    if (helpWindow) {      helpWindow.close();    }  });  // HakkÔöÇÔûÆnda Penceresi  let aboutWindow = null;  ipcMain.on('open-about', () => {    if (aboutWindow) {      if (aboutWindow.isMinimized()) aboutWindow.restore();      aboutWindow.focus();      return;    }    aboutWindow = createChildWindow({      width: 500, height: 440, minWidth: 460, minHeight: 400,      route: 'about'    });    let aboutFocusReady = false;    setTimeout(() => { aboutFocusReady = true; }, 900);    const onAboutFocus = () => { if (aboutFocusReady) flashAlertWindow(aboutWindow); };    aboutWindow.on('focus', onAboutFocus);    aboutWindow.on('closed', () => {      aboutWindow.removeListener('focus', onAboutFocus);      aboutWindow = null;    });  });  // ====== BÔöÇÔûæZE YAZIN ├ö├ç├Â TELEGRAM BOT ======  const TELEGRAM_TOKEN = '8784676783:AAEYmsIUTX2WNNXXl9tl02PrHPm4mLlnNDo';  const TELEGRAM_CHAT_ID = '5556339591';  let contactWindow = null;  ipcMain.on('open-contact-form', () => {    if (contactWindow) {      if (contactWindow.isMinimized()) contactWindow.restore();      contactWindow.focus();      return;    }    contactWindow = createChildWindow({ width: 520, height: 560, minWidth: 480, minHeight: 500, route: 'contact' });    let contactFocusReady = false;    setTimeout(() => { contactFocusReady = true; }, 900);    const onContactFocus = () => { if (contactFocusReady) flashAlertWindow(contactWindow); };    contactWindow.on('focus', onContactFocus);    contactWindow.on('closed', () => {      contactWindow.removeListener('focus', onContactFocus);      contactWindow = null;    });  });  ipcMain.handle('send-telegram-message', async (event, data) => {    const name = data.name || '';    const subject = data.subject || '';    const message = data.message || '';    const attachment = data.attachment || null; // { base64, filename, mimeType }    const local = readLocalLicense ? readLocalLicense() : null;    const licenseKey = local && local.licenseKey ? local.licenseKey : 'Bilinmiyor';    const now = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });    const lines = [      '\u{1F4E9} *Yeni Mesaj \u2014 Caller ID*',      '',      '\u{1F464} *Ad/Unvan:* ' + (name || '\u2014'),      '\u{1F4CC} *Konu:* ' + (subject || '\u2014'),      '\u{1F4AC} *Mesaj:*\n' + message,      '',      '\u{1F511} *Lisans:* ' + licenseKey,      '\u{1F550} *Zaman:* ' + now,    ];    const text = lines.join('\n');    // ├ö├Â├ç├ö├Â├ç Ek dosya varsa sendPhoto veya sendDocument kullan ├ö├Â├ç├ö├Â├ç    if (attachment) {      return new Promise((resolve) => {        const https = require('https');        const fileBuffer = Buffer.from(attachment.base64, 'base64');        const isImage = attachment.mimeType.startsWith('image/');        const endpoint = isImage ? '/sendPhoto' : '/sendDocument';        const fieldName = isImage ? 'photo' : 'document';        // Multipart boundary        const boundary = '----FormBoundary' + Math.random().toString(36).slice(2);        const CRLF = '\r\n';        const buildPart = (name, value) =>          `--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}${value}${CRLF}`;        const filePart = Buffer.concat([          Buffer.from(            `--${boundary}${CRLF}` +            `Content-Disposition: form-data; name="${fieldName}"; filename="${attachment.filename}"${CRLF}` +            `Content-Type: ${attachment.mimeType}${CRLF}${CRLF}`          ),          fileBuffer,          Buffer.from(CRLF)        ]);        const bodyParts = Buffer.concat([          Buffer.from(buildPart('chat_id', TELEGRAM_CHAT_ID)),          Buffer.from(buildPart('caption', text)),          Buffer.from(buildPart('parse_mode', 'Markdown')),          filePart,          Buffer.from(`--${boundary}--${CRLF}`)        ]);        const reqOpts = {          hostname: 'api.telegram.org',          path: '/bot' + TELEGRAM_TOKEN + endpoint,          method: 'POST',          headers: {            'Content-Type': `multipart/form-data; boundary=${boundary}`,            'Content-Length': bodyParts.length          }        };        const req = https.request(reqOpts, (res) => {          let raw = '';          res.on('data', (chunk) => { raw += chunk; });          res.on('end', () => {            try {              const json = JSON.parse(raw);              console.log('[Telegram] Attachment gÔö£├énderildi:', json.ok ? 'OK' : json.description);              resolve({ ok: !!json.ok });            } catch (e) { resolve({ ok: false }); }          });        });        req.on('error', (e) => { console.error('[Telegram] Attachment hatasÔöÇÔûÆ:', e.message); resolve({ ok: false }); });        req.write(bodyParts);        req.end();      });    }    // ├ö├Â├ç├ö├Â├ç Ek yoksa sendMessage ile dÔö£ÔòØz metin gÔö£├énder ├ö├Â├ç├ö├Â├ç    return new Promise((resolve) => {      const https = require('https');      const body = JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'Markdown' });      const req = https.request({        hostname: 'api.telegram.org',        path: '/bot' + TELEGRAM_TOKEN + '/sendMessage',        method: 'POST',        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }      }, (res) => {        let raw = '';        res.on('data', (chunk) => { raw += chunk; });        res.on('end', () => {          try {            const json = JSON.parse(raw);            console.log('[Telegram]', json.ok ? 'GÔö£├énderildi OK' : 'Hata: ' + json.description);            resolve({ ok: !!json.ok });          } catch (e) { resolve({ ok: false }); }        });      });      req.on('error', (e) => { console.error('[Telegram] Hata:', e.message); resolve({ ok: false }); });      req.write(body);      req.end();    });  });  // ====== VERSÔöÇÔûæYON YÔö£├╗NETÔöÇÔûæMÔöÇÔûæ ======  const versionConfigPath = path.join(app.getPath('userData'), 'version-config.json');  ipcMain.handle('get-version', () => {    // Versiyon her zaman package.json'daki app sÔö£ÔòØrÔö£ÔòØmÔö£ÔòØnden okunur    const appVersion = 'V' + app.getVersion();    let date;    try {      if (fs.existsSync(versionConfigPath)) {        const cfg = JSON.parse(fs.readFileSync(versionConfigPath, 'utf-8'));        date = cfg.date || null;      }    } catch (e) { /* ignore */ }    if (!date) {      const today = new Date();      const dd = String(today.getDate()).padStart(2, '0');      const mm = String(today.getMonth() + 1).padStart(2, '0');      date = `${dd}.${mm}.${today.getFullYear()}`;    }    return { version: appVersion, date };  });  ipcMain.handle('save-version', (event, { version, date }) => {    try {      fs.writeFileSync(versionConfigPath, JSON.stringify({ version, date }, null, 2), 'utf-8');      return { success: true };    } catch (e) {      console.error('Versiyon config kaydedilemedi:', e);      return { success: false, error: e.message };    }  });  // ====== GÔö£┬úNCELLEME KONTROLÔö£┬ú (GitHub / electron-updater) ======  ipcMain.handle('check-for-updates', async () => {    if (isDev) {      return { pending: true, message: 'GeliÔö╝┼ştirme modunda gÔö£ÔòØncelleme kontrolÔö£ÔòØ devre dÔöÇÔûÆÔö╝┼şÔöÇÔûÆ.' };    }    if (!autoUpdater) {      return { error: 'GÔö£ÔòØncelleme modÔö£ÔòØlÔö£ÔòØ yÔö£ÔòØklenemedi.' };    }    try {      const result = await autoUpdater.checkForUpdates();      const currentVersion = app.getVersion();      const latestVersion = result?.updateInfo?.version || currentVersion;      const hasUpdate = result?.updateInfo?.version        ? result.updateInfo.version !== currentVersion        : false;      const rn = result?.updateInfo?.releaseNotes;      const releaseNotes = Array.isArray(rn)        ? rn.map(r => (typeof r === 'string' ? r : r.note || '')).join('\n')        : (typeof rn === 'string' ? rn : '');      return {        updateAvailable: hasUpdate,        hasUpdate,        currentVersion: 'v' + currentVersion,        latestVersion: 'v' + latestVersion,        releaseNotes,        url: 'https://github.com/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest'      };    } catch (err) {      console.error('[Updater] GÔö£ÔòØncelleme kontrolÔö£ÔòØ hatasÔöÇÔûÆ:', err.message);      return { error: err.message };    }  });  // ====== ÔöÇÔûæNDÔöÇÔûæR & KUR (Otomatik GÔö£ÔòØncelleme ├ö├ç├Â In-App Download) ======  // 1. GitHub Releases API'den en son .exe asset URL'ini al  // 2. HTTPS ile exe'yi %TEMP% klasÔö£├érÔö£ÔòØne indir, ilerlemeyi frontend'e bildir  // 3. ÔöÇÔûændirme bitince installer'ÔöÇÔûÆ baÔö╝┼şlat ve app'ÔöÇÔûÆ kapat  ipcMain.handle('download-and-install-update', async (event) => {    const GH_TOKEN = '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';    const sendProgress = (pct) => {      if (mainWindow && !mainWindow.isDestroyed()) {        mainWindow.webContents.send('download-progress', pct);      }    };    try {      // AdÔöÇÔûÆm 1: En son release'i al      const releaseInfo = await new Promise((resolve, reject) => {        const opts = {          hostname: 'api.github.com',          path: '/repos/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest',          method: 'GET',          headers: {            'Authorization': `token ${GH_TOKEN}`,            'User-Agent': 'CallerIDApp',            'Accept': 'application/vnd.github.v3+json'          }        };        const req = https.request(opts, (res) => {          let data = '';          res.on('data', c => data += c);          res.on('end', () => {            try { resolve(JSON.parse(data)); } catch (e) { reject(e); }          });        });        req.on('error', reject);        req.end();      });      // AdÔöÇÔûÆm 2: .exe asset URL'ini bul      const asset = (releaseInfo.assets || []).find(a => a.name.endsWith('.exe'));      if (!asset) return { success: false, error: 'Kurulum dosyasÔöÇÔûÆ bulunamadÔöÇÔûÆ.' };      const downloadUrl = asset.browser_download_url;      const exeName = asset.name;      const destPath = path.join(os.tmpdir(), exeName);      sendProgress(0);      // AdÔöÇÔûÆm 3: DosyayÔöÇÔûÆ indir (redirect desteÔöÇ┼şi ile)      await new Promise((resolve, reject) => {        const doDownload = (url, redirectCount = 0) => {          if (redirectCount > 5) return reject(new Error('Ôö£├ğok fazla yÔö£├énlendirme.'));          const urlObj = new URL(url);          const reqOpts = {            hostname: urlObj.hostname,            path: urlObj.pathname + urlObj.search,            method: 'GET',            headers: {              'Authorization': `token ${GH_TOKEN}`,              'User-Agent': 'CallerIDApp',              'Accept': 'application/octet-stream'            }          };          const fileStream = fs.createWriteStream(destPath);          const req = https.request(reqOpts, (res) => {            // YÔö£├énlendirme (301/302/307)            if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) && res.headers.location) {              fileStream.close(() => fs.unlink(destPath, () => { }));              doDownload(res.headers.location, redirectCount + 1);              return;            }            const total = parseInt(res.headers['content-length'] || '0', 10);            let received = 0;            res.on('data', (chunk) => {              received += chunk.length;              if (total > 0) sendProgress(Math.round((received / total) * 100));            });            res.pipe(fileStream);            fileStream.on('finish', () => { fileStream.close(); resolve(); });            fileStream.on('error', reject);            res.on('error', reject);          });          req.on('error', (e) => { fileStream.close(() => fs.unlink(destPath, () => { })); reject(e); });          req.end();        };        doDownload(downloadUrl);      });      sendProgress(100);      // AdÔöÇÔûÆm 4: Installer'ÔöÇÔûÆ baÔö╝┼şlat ve uygulamayÔöÇÔûÆ kapat      console.log('[Update] ÔöÇÔûændirme tamamlandÔöÇÔûÆ, installer baÔö╝┼şlatÔöÇÔûÆlÔöÇÔûÆyor:', destPath);      await shell.openPath(destPath);      setTimeout(() => app.quit(), 1500);      return { success: true };    } catch (err) {      console.error('[Update] ÔöÇÔûændirme hatasÔöÇÔûÆ:', err.message);      return { success: false, error: err.message };    }  });  // ====== HAT NUMARALARI YÔö£├╗NETÔöÇÔûæMÔöÇÔûæ ======  const hatConfigPath = path.join(app.getPath('userData'), 'hat-config.json');  ipcMain.handle('get-hat-numbers', () => {    try {      if (fs.existsSync(hatConfigPath)) {        const data = JSON.parse(fs.readFileSync(hatConfigPath, 'utf-8'));        return data.hatNumbers || { 1: '', 2: '', 3: '' };      }    } catch (e) { console.error('Hat config yÔö£ÔòØklenemedi:', e); }    return { 1: '', 2: '', 3: '' };  });  ipcMain.handle('save-hat-numbers', (event, hatNumbers) => {    try {      fs.writeFileSync(hatConfigPath, JSON.stringify({ hatNumbers }, null, 2), 'utf-8');      if (mainWindow) mainWindow.webContents.send('hat-numbers-updated', hatNumbers);      return { success: true };    } catch (e) {      console.error('Hat config kaydedilemedi:', e);      return { success: false, error: e.message };    }  });  // ====== TEMA YÔö£├╗NETÔöÇÔûæMÔöÇÔûæ (AÔö£├ğIK / KOYU MOD) ======  const themeConfigPath = path.join(app.getPath('userData'), 'theme-config.json');  ipcMain.handle('get-theme', () => {    try {      if (fs.existsSync(themeConfigPath)) {        const data = JSON.parse(fs.readFileSync(themeConfigPath, 'utf-8'));        return data.theme || 'light';      }    } catch (e) { console.error('Tema config yÔö£ÔòØklenemedi:', e); }    return 'light';  });  ipcMain.handle('save-theme', (event, theme) => {    try {      fs.writeFileSync(themeConfigPath, JSON.stringify({ theme }, null, 2), 'utf-8');      // Ana pencereye tema deÔöÇ┼şiÔö╝┼ştiÔöÇ┼şini bildir      if (mainWindow) mainWindow.webContents.send('theme-updated', theme);      return { success: true };    } catch (e) {      console.error('Tema config kaydedilemedi:', e);      return { success: false, error: e.message };    }  });  // ====== PAROLA YÔö£├╗NETÔöÇÔûæMÔöÇÔûæ ======  const passwordConfigPath = path.join(app.getPath('userData'), 'password-config.json');  const sha256 = (str) => crypto.createHash('sha256').update(str).digest('hex');  ipcMain.handle('get-password-config', () => {    try {      if (fs.existsSync(passwordConfigPath)) {        const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));        // hash ve cevap hash'ini frontend'e dÔö£├éndÔö£ÔòØrme ├ö├ç├Â sadece meta verileri dÔö£├én        return { enabled: data.enabled || false, secretQuestion: data.secretQuestion || '' };      }    } catch (e) { console.error('Parola config okunamadÔöÇÔûÆ:', e); }    return { enabled: false, secretQuestion: '' };  });  ipcMain.handle('save-password-config', (event, { enabled, password, secretQuestion, secretAnswer }) => {    try {      const existing = fs.existsSync(passwordConfigPath)        ? JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'))        : {};      const config = {        enabled,        passwordHash: password ? sha256(password) : (existing.passwordHash || ''),        secretQuestion: secretQuestion || (existing.secretQuestion || ''),        secretAnswerHash: secretAnswer ? sha256(secretAnswer.toLowerCase().trim()) : (existing.secretAnswerHash || '')      };      fs.writeFileSync(passwordConfigPath, JSON.stringify(config, null, 2), 'utf-8');      return { success: true };    } catch (e) {      console.error('Parola config kaydedilemedi:', e);      return { success: false, error: e.message };    }  });  ipcMain.handle('verify-password', (event, password) => {    try {      if (!fs.existsSync(passwordConfigPath)) return false;      const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));      return data.passwordHash === sha256(password);    } catch (e) { return false; }  });  ipcMain.handle('verify-secret-answer', (event, answer) => {    try {      if (!fs.existsSync(passwordConfigPath)) return false;      const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));      return data.secretAnswerHash === sha256(answer.toLowerCase().trim());    } catch (e) { return false; }  });  ipcMain.handle('reset-password', (event, newPassword) => {    try {      if (!fs.existsSync(passwordConfigPath)) return { success: false };      const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));      data.passwordHash = sha256(newPassword);      fs.writeFileSync(passwordConfigPath, JSON.stringify(data, null, 2), 'utf-8');      return { success: true };    } catch (e) {      return { success: false, error: e.message };    }  });  // ====== YÔö£├╗NETÔöÇÔûæCÔöÇÔûæ Ôö╝┼ŞÔöÇÔûæFRESÔöÇÔûæ ======  // Sabit yÔö£├énetici Ôö╝┼şifresi ├ö├ç├Â SHA-256 hash olarak saklanÔöÇÔûÆr  const ADMIN_PASSWORD_HASH = sha256('04011985teknogoz');  ipcMain.handle('verify-admin-password', (event, pwd) => {    return sha256(pwd) === ADMIN_PASSWORD_HASH;  });  ipcMain.handle('admin-disable-password', async (event, adminPwd) => {    if (sha256(adminPwd) !== ADMIN_PASSWORD_HASH) {      return { success: false, error: 'YanlÔöÇÔûÆÔö╝┼ş yÔö£├énetici Ôö╝┼şifresi.' };    }    try {      const config = { enabled: false, passwordHash: '', secretQuestion: '', secretAnswerHash: '' };      fs.writeFileSync(passwordConfigPath, JSON.stringify(config, null, 2), 'utf-8');      return { success: true };    } catch (e) {      return { success: false, error: e.message };    }  });  // ====== DÔöÇÔûæL YÔö£├╗NETÔöÇÔûæMÔöÇÔûæ ======  const languageConfigPath = path.join(app.getPath('userData'), 'language-config.json');  ipcMain.handle('get-language', () => {    try {      if (fs.existsSync(languageConfigPath)) {        const data = JSON.parse(fs.readFileSync(languageConfigPath, 'utf-8'));        return data.lang || 'tr';      }    } catch (e) { console.error('Dil config okunamadÔöÇÔûÆ:', e); }    return 'tr';  });  ipcMain.handle('save-language', (event, lang) => {    try {      fs.writeFileSync(languageConfigPath, JSON.stringify({ lang }, null, 2), 'utf-8');      return { success: true };    } catch (e) {      return { success: false, error: e.message };    }  });  ipcMain.handle('apply-language', async (event, lang) => {    // 1. Dili kaydet    try {      fs.writeFileSync(languageConfigPath, JSON.stringify({ lang }, null, 2), 'utf-8');    } catch (e) {      return { success: false, error: e.message };    }    // 2. Settings penceresini kapat    const senderWindow = BrowserWindow.fromWebContents(event.sender);    if (senderWindow && senderWindow !== mainWindow) {      senderWindow.close();    }    // 3. Ana pencereyi yeniden yÔö£ÔòØkle (Vite dev server Ôö£─şalÔöÇÔûÆÔö╝┼şmaya devam eder)    if (mainWindow && !mainWindow.isDestroyed()) {      mainWindow.webContents.reload();    }    return { success: true };  });  // ====== YAZICI YÔö£├╗NETÔöÇÔûæMÔöÇÔûæ ======  const printerConfigPath = path.join(app.getPath('userData'), 'printer-config.json');  // Sistemdeki tÔö£ÔòØm yazÔöÇÔûÆcÔöÇÔûÆlarÔöÇÔûÆ listele  ipcMain.handle('get-printers', async () => {    try {      const printers = await mainWindow.webContents.getPrintersAsync();      return printers.map(p => ({        name: p.name,        displayName: p.displayName || p.name,        description: p.description || '',        status: p.status,        isDefault: p.isDefault      }));    } catch (error) {      console.error('YazÔöÇÔûÆcÔöÇÔûÆ listesi alÔöÇÔûÆnamadÔöÇÔûÆ:', error);      return [];    }  });  // SeÔö£─şilen yazÔöÇÔûÆcÔöÇÔûÆyÔöÇÔûÆ kaydet  ipcMain.handle('save-printer-selection', (event, printerName) => {    try {      const fs = require('fs');      fs.writeFileSync(printerConfigPath, JSON.stringify({ selectedPrinter: printerName }, null, 2), 'utf-8');      console.log('YazÔöÇÔûÆcÔöÇÔûÆ seÔö£─şimi kaydedildi:', printerName);      return { success: true };    } catch (error) {      console.error('YazÔöÇÔûÆcÔöÇÔûÆ seÔö£─şimi kaydedilemedi:', error);      return { success: false, error: error.message };    }  });  // KaydedilmiÔö╝┼ş yazÔöÇÔûÆcÔöÇÔûÆ seÔö£─şimini yÔö£ÔòØkle  ipcMain.handle('get-printer-selection', () => {    try {      if (fs.existsSync(printerConfigPath)) {        const data = JSON.parse(fs.readFileSync(printerConfigPath, 'utf-8'));        return data.selectedPrinter || null;      }    } catch (error) {      console.error('YazÔöÇÔûÆcÔöÇÔûÆ seÔö£─şimi yÔö£ÔòØklenemedi:', error);    }    return null;  });  //   // YazÔöÇÔûÆcÔöÇÔûÆ GerÔö£─şek ZamanlÔöÇÔûÆ Durum KontrolÔö£ÔòØ (TCP BaÔöÇ┼şlantÔöÇÔûÆ Testi)  // AÔöÇ┼ş yazÔöÇÔûÆcÔöÇÔûÆsÔöÇÔûÆ iÔö£─şin: PS ile IP al ├ö├Ñ├å TCP baÔöÇ┼şlantÔöÇÔûÆsÔöÇÔûÆ (9100/631/80) dene.  // USB/paylaÔö╝┼şÔöÇÔûÆmlÔöÇÔûÆ yazÔöÇÔûÆcÔöÇÔûÆ iÔö£─şin: Get-Printer PrinterStatus'a fallback.  ipcMain.handle('get-printer-status', async (event, printerName) => {    if (!printerName) return 'not_selected';    const { exec } = child_process;    const net = require('net');    // Tek tÔöÇÔûÆrnak ve Ôö£─şift tÔöÇÔûÆrnaÔöÇ┼şÔöÇÔûÆ temizle ├ö├ç├Â PS komut satÔöÇÔûÆrÔöÇÔûÆ gÔö£ÔòØvenliÔöÇ┼şi    const escaped = printerName.replace(/'/g, "''").replace(/"/g, '');    // YardÔöÇÔûÆmcÔöÇÔûÆ: tek bir TCP portunu dene    const tryTcp = (ip, port, timeoutMs) => new Promise((res) => {      const sock = new net.Socket();      let done = false;      const finish = (ok) => { if (!done) { done = true; try { sock.destroy(); } catch (_) { } res(ok); } };      sock.setTimeout(timeoutMs);      sock.on('connect', () => finish(true));      sock.on('error', () => finish(false));      sock.on('timeout', () => finish(false));      try { sock.connect(port, ip); } catch (_) { finish(false); }    });    // AdÔöÇÔûÆm 1: YazÔöÇÔûÆcÔöÇÔûÆnÔöÇÔûÆn aÔöÇ┼ş IP'sini tek satÔöÇÔûÆr PS komutuyla al (SON DERECE Ôö£├énemli: tek satÔöÇÔûÆr!)    const ip = await new Promise((res) => {      const cmd = `powershell -NoProfile -NonInteractive -Command "(Get-PrinterPort -Name (Get-Printer -Name '${escaped}' -ErrorAction Stop).PortName -ErrorAction Stop).PrinterHostAddress"`;      exec(cmd, { timeout: 8000 }, (err, stdout, stderr) => {        const val = (stdout || '').trim();        console.log(`[Printer] IP query ├ö├Ñ├å stdout:'${val}' err:${err ? err.message : 'none'}`);        res(err || !val ? '' : val);      });    });    if (ip) {      // AÔöÇ┼ş yazÔöÇÔûÆcÔöÇÔûÆsÔöÇÔûÆ ├ö├ç├Â TCP ile gerÔö£─şek baÔöÇ┼şlantÔöÇÔûÆ testi      console.log(`[Printer] Testing TCP on ${ip} ...`);      if (await tryTcp(ip, 9100, 3000)) { console.log('[Printer] READY:9100'); return 'ready'; }      if (await tryTcp(ip, 631, 3000)) { console.log('[Printer] READY:631'); return 'ready'; }      if (await tryTcp(ip, 80, 3000)) { console.log('[Printer] READY:80'); return 'ready'; }      console.log('[Printer] NOT READY (all ports failed)');      return 'not_ready';    }    // IP alÔöÇÔûÆnamadÔöÇÔûÆ (USB / paylaÔö╝┼şÔöÇÔûÆlan yazÔöÇÔûÆcÔöÇÔûÆ) ├ö├Ñ├å WorkOffline + WMI kontrolÔö£ÔòØ    // Get-Printer.PrinterStatus spooler Ôö£├énbelleÔöÇ┼şi nedeniyle geÔö£─ş gÔö£ÔòØncellenir.    // WorkOffline=True ve Win32_Printer.PrinterStatus=7 (Offline) anlÔöÇÔûÆk tepki verir.    console.log(`[Printer] No network IP ├ö├ç├Â USB/WorkOffline+WMI check for '${printerName}'`);    const usbStatus = await new Promise((res) => {      // Tek PowerShell Ôö£─şaÔöÇ┼şrÔöÇÔûÆsÔöÇÔûÆnda Ôö£ÔòØÔö£─ş deÔöÇ┼şeri birden al:      // SatÔöÇÔûÆr 1: WorkOffline (True/False)      // SatÔöÇÔûÆr 2: Win32_Printer PrinterStatus sayÔöÇÔûÆsÔöÇÔûÆ (3=Idle, 7=Offline)      // SatÔöÇÔûÆr 3: Get-Printer PrinterStatus string (Idle/Normal/Offline)      const wmiName = escaped.replace(/\\/g, '\\\\');      const cmd3 = `powershell -NoProfile -NonInteractive -Command "$p=Get-Printer -Name '${escaped}' -ErrorAction Stop;$w=(Get-WmiObject -Class Win32_Printer -Filter \\"Name='${wmiName}'\\" -ErrorAction SilentlyContinue);Write-Output ($p.WorkOffline.ToString());Write-Output ($w.PrinterStatus);Write-Output ($p.PrinterStatus.ToString())"`;      exec(cmd3, { timeout: 9000 }, (err3, out3) => {        if (err3) {          console.log(`[Printer] USB check error: ${err3.message}`);          res({ workOffline: false, wmiStatus: -1, spoolerStatus: 'unknown' });          return;        }        const lines = (out3 || '').trim().split(/\r?\n/).map(l => l.trim());        const workOffline = (lines[0] || '').toLowerCase() === 'true';        const wmiStatus = parseInt(lines[1] || '0', 10); // 3=Idle, 7=Offline        const spoolerStatus = (lines[2] || '').toLowerCase();        console.log(`[Printer] USB├ö├Ñ├å WorkOffline:${workOffline} WmiStatus:${wmiStatus} SpoolerStatus:${spoolerStatus}`);        res({ workOffline, wmiStatus, spoolerStatus });      });    });    // WorkOffline=True ├ö├Ñ├å kesinlikle baÔöÇ┼şlÔöÇÔûÆ deÔöÇ┼şil    if (usbStatus.workOffline) return 'not_ready';    // WMI PrinterStatus=7 ├ö├Ñ├å Offline (USB kablosu Ôö£─şekildi, spooler henÔö£ÔòØz gÔö£ÔòØncellemedi)    if (usbStatus.wmiStatus === 7) return 'not_ready';    // Spooler durumu kontrollÔö£ÔòØ karÔö╝┼şÔöÇÔûÆlaÔö╝┼ştÔöÇÔûÆrma    return (usbStatus.spoolerStatus === 'idle' || usbStatus.spoolerStatus === 'normal' || usbStatus.spoolerStatus === 'printing')      ? 'ready' : 'not_ready';  });  // ====== RAW HARDWARE CUT (YARDIMCI FONKSÔöÇÔûæYON) ======  // Sadece kaÔöÇ┼şÔöÇÔûÆtÔöÇÔûÆ ilerletir ve keser. YazdÔöÇÔûÆrma iÔö╝┼şleminden sonra Ôö£─şaÔöÇ┼şÔöÇÔûÆrÔöÇÔûÆlmalÔöÇÔûÆdÔöÇÔûÆr.  const triggerHardwareCut = (printerName) => {    const fs = require('fs');    const os = require('os');    const { execFile } = require('child_process');    const ts = Date.now();    const psPath = path.join(os.tmpdir(), `cid_cut_${ts}.ps1`);    // 0x0A: Line Feed (ÔöÇÔûælerlet), 0x1D 0x56 0x42 0x00: GS V B 0 (Kesme Komutu)    // DLL cache kullanarak hÔöÇÔûÆzlÔöÇÔûÆ yÔö£ÔòØkleme (Add-Type -OutputAssembly ile bir kez derlenir)    const psScript = getRawPrinterPsHeader() + `$printerName = '${printerName.replace(/'/g, "''")}'$bytes = [byte[]]@(0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x42, 0x00)$hPrinter = [IntPtr]::Zero$di = New-Object RawPrinterCore+DOCINFOA$di.pDocName  = "CUT_COMMAND"$di.pDataType = "RAW"if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero)) {    [RawPrinterCore]::StartDocPrinter($hPrinter, 1, $di) | Out-Null    [RawPrinterCore]::StartPagePrinter($hPrinter) | Out-Null    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)    [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)    $written = 0    [RawPrinterCore]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written) | Out-Null    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)    [RawPrinterCore]::EndPagePrinter($hPrinter) | Out-Null    [RawPrinterCore]::EndDocPrinter($hPrinter) | Out-Null    [RawPrinterCore]::ClosePrinter($hPrinter) | Out-Null}`;    fs.writeFileSync(psPath, psScript, 'utf-8');    execFile(      'powershell',      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],      { timeout: 15000 },      () => {        try { fs.unlinkSync(psPath); } catch (e) { }      }    );  };  // ====== YAZDIRMA (ESC/POS RAW PROTOCOL) ======  ipcMain.handle('print-customer-info', async (event, { name, phone, address, callerPhone }) => {    try {      let selectedPrinter = null;      if (fs.existsSync(printerConfigPath)) {        const config = JSON.parse(fs.readFileSync(printerConfigPath, 'utf-8'));        selectedPrinter = config.selectedPrinter || null;      }      if (!selectedPrinter) {        return { success: false, error: 'YazÔöÇÔûÆcÔöÇÔûÆ seÔö£─şilmemiÔö╝┼ş. LÔö£ÔòØtfen Ayarlar > YazÔöÇÔûÆcÔöÇÔûÆ(lar) bÔö£├élÔö£ÔòØmÔö£ÔòØnden bir yazÔöÇÔûÆcÔöÇÔûÆ seÔö£─şin.' };      }      console.log('[Print] ESC/POS RAW yazdÔöÇÔûÆrma baÔö╝┼şladÔöÇÔûÆ:', selectedPrinter);      const now = new Date();      const tarih = now.toLocaleDateString('tr-TR');      const saat = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });      // ================================================================      // Ôö╝┼ŞABLON LAYOUT (saÔöÇ┼ş kenarlÔöÇÔûÆk 9mm saÔöÇ┼şa kaydÔöÇÔûÆrÔöÇÔûÆldÔöÇÔûÆ ├ö├Ñ├å 70.5mm toplam)      // Yatay Ôö£─şizgi formatÔöÇÔûÆ: |------...------|  (kÔö£├éÔö╝┼şelerde + YOK)      // Etiket: 17 char | DeÔöÇ┼şer: 27 char ├ö├Ñ├å toplam 47 char (~70.5mm @ 1.5mm/char)      // 1(|) + 17 + 1(|) + 27 + 1(|) = 47      // ================================================================      const W = 48;   // toplam satÔöÇÔûÆr geniÔö╝┼şliÔöÇ┼şi      const LBL = 17;   // etiket sÔö£ÔòØtunu      const VAL = 28;   // deÔöÇ┼şer sÔö£ÔòØtunu  (1+17+1+28+1 = 48)      // Teslimat/Tutar: CAL=LBL ve CAR=VAL ├ö├Ñ├å orta | aynÔöÇÔûÆ pozisyonda      const CAL = 31;   // Teslimat sol sÔö£ÔòØtun (17mm saÔöÇ┼şa kaydÔöÇÔûÆrÔöÇÔûÆldÔöÇÔûÆ: 17├ö├Ñ├å31)      const CAR = 14;   // Tutar saÔöÇ┼ş sÔö£ÔòØtun  (17mm daraltÔöÇÔûÆldÔöÇÔûÆ: 28├ö├Ñ├å14)      const pad = (str, len) => {        const s = (str || '').toString().substring(0, len);        return s + ' '.repeat(Math.max(0, len - s.length));      };      const center = (str, len) => {        const s = (str || '').toString().substring(0, len);        const sp = Math.max(0, len - s.length);        return ' '.repeat(Math.floor(sp / 2)) + s + ' '.repeat(Math.ceil(sp / 2));      };      const rjust = (str, len) => {        const s = (str || '').toString().substring(0, len);        return ' '.repeat(Math.max(0, len - s.length)) + s;      };      // Turkce karakterler ASCII karsiliklarina donusturulur (yazici uyumlulugu)      const normalizeTR = (str) => (str || '').toString()        .replace(/\u015f/g, 's').replace(/\u015e/g, 'S')        .replace(/\u011f/g, 'g').replace(/\u011e/g, 'G')        .replace(/\u0131/g, 'i').replace(/\u0130/g, 'I')        .replace(/\u00e7/g, 'c').replace(/\u00c7/g, 'C')        .replace(/\u00f6/g, 'o').replace(/\u00d6/g, 'O')        .replace(/\u00fc/g, 'u').replace(/\u00dc/g, 'U')        .replace(/\u00e2/g, 'a').replace(/\u00ea/g, 'e')        .replace(/\u00ee/g, 'i').replace(/\u00f4/g, 'o')        .replace(/\u00fb/g, 'u').replace(/\u00e0/g, 'a');      const textToBytes = (str) => {        const s = normalizeTR(str);        const result = [];        for (let i = 0; i < s.length; i++) result.push(s.charCodeAt(i) & 0x7F);        return result;      };      // Telefon numarasini (5XX) XXX XX XX veya (2XX) XXX XX XX formatina donusturur      const fmtPhone = (raw) => {        const digits = normalizeTR((raw || '').toString()).replace(/\D/g, '');        let d = digits;        if (d.length === 11 && d[0] === '0') d = d.slice(1); // bas?ndaki 0'? kaldir        if (d.length === 10) {          return '(' + d.slice(0, 3) + ') ' + d.slice(3, 6) + ' ' + d.slice(6, 8) + ' ' + d.slice(8);        }        return normalizeTR(raw || ''); // formatlanamiyorsa oldugu gibi      };      const hLine = () => '|' + '-'.repeat(LBL) + '|' + '-'.repeat(VAL) + '|';      // Teslimat/Tutar ayracÔöÇÔûÆ      const hLineCols = () => '|' + '-'.repeat(CAL) + '|' + '-'.repeat(CAR) + '|';      // Standart 2 sÔö£ÔòØtunlu satÔöÇÔûÆr: | etiket          | deÔöÇ┼şer                  |      const dataRow = (label, value) => {        const rows = [];        const maxV = VAL - 1;        const valStr = (value || '').toString();        const chunks = [];        if (valStr.length === 0) {          chunks.push('');        } else {          for (let i = 0; i < valStr.length; i += maxV) {            chunks.push(valStr.substring(i, i + maxV));          }        }        chunks.forEach((chunk, idx) => {          const lbl = idx === 0 ? pad(label, LBL) : pad('', LBL);          rows.push('|' + lbl + '|' + ' ' + pad(chunk, maxV) + '|');        });        return rows;      };      // Teslimat / Tutar satÔöÇÔûÆrÔöÇÔûÆ      const colsRow = (left, right) => {        return '|' + center(left, CAL) + '|' + center(right, CAR) + '|';      };      // ================================================================      // FÔöÇÔûæÔö╝┼Ş OLUÔö╝┼ŞTURMA      // ================================================================      const buildReceipt = () => {        const ESC = 0x1B;        const GS = 0x1D;        const LF = 0x0A;        const bytes = [];        const push = (...args) => args.forEach(b => bytes.push(b));        const line = (str) => { bytes.push(...textToBytes(str)); bytes.push(LF); };        push(ESC, 0x40);         // Printer init
++        push(0x1C, 0x2E);        // FS . (Kanji Disable)
++        push(ESC, 0x74, 0x12);   // PC857 TÔö£ÔòØrkÔö£─şe kod sayfasÔöÇÔûÆ├ö├ç├ÂÔö╝┼ş,ÔöÇ┼ş,ÔöÇÔûÆ,ÔöÇÔûæ vs. doÔöÇ┼şru basar        // Sadece deÔöÇ┼şer kÔöÇÔûÆsmÔöÇÔûÆnÔöÇÔûÆ bold yapan yardÔöÇÔûÆmcÔöÇÔûÆ:        // |label           |(BOLD)deÔöÇ┼şer                    |(/BOLD) LF        const boldValueRow = (label, value) => {          const maxV = VAL - 1;          const valStr = (value || '').toString();          const chunks = valStr.length === 0 ? [''] :            Array.from({ length: Math.ceil(valStr.length / maxV) },              (_, i) => valStr.substring(i * maxV, (i + 1) * maxV));          chunks.forEach((chunk, idx) => {            const lbl = idx === 0 ? pad(label, LBL) : pad('', LBL);            bytes.push(...textToBytes('|' + lbl + '|'));            push(ESC, 0x45, 0x01);            bytes.push(...textToBytes(' ' + pad(chunk, maxV) + '|'));            push(ESC, 0x45, 0x00);            push(LF);          });        };        // minLines: en az bu kadar satir basilir (bos satir ile doldurulur)        // maxLines: fazlasi kesilir        const paddedBoldValueRow = (label, value, minLines, maxLines) => {          const maxV = VAL - 1;          const valStr = (value || '').toString();          let chunks = [];          if (valStr.length === 0) {            chunks = [''];          } else {            for (let i = 0; i < valStr.length; i += maxV)              chunks.push(valStr.substring(i, i + maxV));          }          // Max satir kap          chunks = chunks.slice(0, maxLines);          // Min satire tamamla (bos satir ile)          while (chunks.length < minLines) chunks.push('');          chunks.forEach((chunk, idx) => {            const lbl = idx === 0 ? pad(label, LBL) : pad('', LBL);            bytes.push(...textToBytes('|' + lbl + '|'));            push(ESC, 0x45, 0x01);            bytes.push(...textToBytes(' ' + pad(chunk, maxV) + '|'));            push(ESC, 0x45, 0x00);            push(LF);          });        };        // === BASLIK: Gaziburma Logosu ├ö├ç├Â ESC * (ESC a 1 ile ortalanir) ===        try {          const { nativeImage } = require('electron');          const logoPath = require('path').join(__dirname, '..', 'Gaziburma Logo (1458x625).png');          // 300 sutun ~ 42mm @ 180dpi; 58mm kagit ortasinda gÔö£├ézÔö£ÔòØkÔö£ÔòØr          const COLS = 300;          const logoH = Math.round(COLS * 625 / 1458); // ~128 piksel          const img = nativeImage.createFromPath(logoPath)            .resize({ width: COLS, height: logoH, quality: 'better' });          const size = img.getSize();          const rgba = img.getBitmap();          // ESC a 1: orta hizala          push(ESC, 0x61, 0x01);          // ESC 3 24: satir araligini tam 24 noktaya ayarla (serit yuksekligi)          // Bu olmadan LF varsayilan aralikla kaÔöÇ┼şidi ilerletir => seritler arasinda bosluk!          push(ESC, 0x33, 24);          // ESC * mode 33 = 24-nokta cift yogunluk; 3 byte/sutun          const STRIP = 24;          for (let startRow = 0; startRow < size.height; startRow += STRIP) {            push(ESC, 0x2A, 33, COLS & 0xFF, (COLS >> 8) & 0xFF);            for (let col = 0; col < COLS; col++) {              let b0 = 0, b1 = 0, b2 = 0;              for (let dot = 0; dot < STRIP; dot++) {                const row = startRow + dot;                if (row < size.height) {                  const idx = (row * size.width + col) * 4;                  const r = rgba[idx], g = rgba[idx + 1], bv = rgba[idx + 2], a = rgba[idx + 3];                  const gray = a < 128 ? 255 : Math.round(0.299 * r + 0.587 * g + 0.114 * bv);                  if (gray < 128) {                    if (dot < 8) b0 |= (0x80 >> dot);                    else if (dot < 16) b1 |= (0x80 >> (dot - 8));                    else b2 |= (0x80 >> (dot - 16));                  }                }              }              push(b0, b1, b2);            }            push(LF);          }          push(ESC, 0x32);        // Varsayilan satir araligina geri don (ESC 2)          push(ESC, 0x61, 0x00);  // Sol hiza          // Logo ile Ôö╝┼şablon arasÔöÇÔûÆnda boÔö╝┼şluk YOK (bitiÔö╝┼şik)        } catch (e) {          push(ESC, 0x61, 0x01);          push(ESC, 0x45, 0x01);          line('gaziburma');          push(ESC, 0x45, 0x00);          push(ESC, 0x61, 0x00);        }        // === HEADER TEK HÔö£┬úCRE (2 satÔöÇÔûÆr) ├ö├ç├Â ortada | yok ===        // Ôö£┬úst yatay Ôö£─şizgi ├ö├ç├Â kÔö£├éÔö╝┼şeler | ile temiz        // ├£st ├ğer├ğeve: ÔöîÔöÇÔöÇÔöÇÔöÇ...ÔöÇÔöÇÔöÇÔöÇÔöÉ  (0xDA = Ôöî, 0xC4 = ÔöÇ, 0xBF = ÔöÉ)        bytes.push(0xDA);        for (let i = 0; i < W - 2; i++) bytes.push(0xC4);        bytes.push(0xBF);        bytes.push(LF);        // ÔöÇÔûæÔö£─ş geniÔö╝┼şlik = W-2 = 46 char. Sol bÔö£├élge = LBL(17), SaÔöÇ┼ş bÔö£├élge = W-2-LBL(29)        const hdrR = W - 2 - LBL; // 29 char ├ö├ç├Â saÔöÇ┼ş yazÔöÇÔûÆ bÔö£├élgesi (iÔö£─ş | yok)        // Satir 1: Gaziburma ortali | Hat numarasi sag yali        const headerPhoneStr = fmtPhone(callerPhone || '').substring(0, hdrR).trim();        line('|' + center('Gaziburma', LBL) + rjust(headerPhoneStr, hdrR) + '|');        // SatÔöÇÔûÆr 2: Mustafa sol bÔö£├élge ortasÔöÇÔûÆ | Pendik 4mm (~3 char) saÔöÇ┼şa kaydÔöÇÔûÆrÔöÇÔûÆlmÔöÇÔûÆÔö╝┼ş ├ö├ç├Â TEK HÔö£┬úCRE        line('|' + center('Mustafa', LBL) + pad('   Pendik', hdrR) + '|');        // ├ûzelle┼ştirilmi┼ş yatay ├ğizgi ve T-ba─şlant─▒ (junction) ├ğizici        // PC857 Box-drawing karakterleri: Ôö£ (0xC3), Ôö╝ (0xC5), Ôö┤ (0xC1), Ôö¼ (0xC2), Ôöñ (0xB4), ÔöÇ (0xC4)        const pushHLineBytes = (down17, up17, down31, up31) => {          bytes.push(0xC3);          for (let i = 1; i < W - 1; i++) {            let char = 0xC4; // ÔöÇ (kesintisiz yatay tam ├ğizgi)            if (i === LBL + 1) {              if (up17 && down17) char = 0xC5;              else if (up17) char = 0xC1;              else if (down17) char = 0xC2;            } else if (i === CAL + 1) {              if (up31 && down31) char = 0xC5;              else if (up31) char = 0xC1;              else if (down31) char = 0xC2;            }            bytes.push(char);          }          bytes.push(0xB4);          bytes.push(LF);        };        pushHLineBytes(true, false, false, false);        // === SÔöÇÔûæPARÔöÇÔûæÔö╝┼Ş TARÔöÇÔûæHÔöÇÔûæ ├ö├ç├Â deÔöÇ┼şer bold ===        boldValueRow('Siparis Tarihi:', `${tarih} ${saat}`);pushHLineBytes(true, true, false, false);        // === TESLÔöÇÔûæMAT TARÔöÇÔûæHÔöÇÔûæ ===        dataRow('Teslimat Tarihi:', '').forEach(r => line(r));pushHLineBytes(true, true, false, false);        // === TEL -- deger bold, formatli ===        // 'Veri Bekleniyor' veya 'Bilinmiyor' placeholder metinleri fiÔö╝┼şe BOÔö╝┼Ş olarak basÔöÇÔûÆlÔöÇÔûÆr        const PLACEHOLDERS = ['Veri Bekleniyor', 'Bilinmiyor', 'Waiting for Data', 'Unknown'];        const cleanPhone   = (PLACEHOLDERS.includes(phone)   || !phone)   ? '' : phone;        const cleanName    = (PLACEHOLDERS.includes(name)    || !name)    ? '' : name;        const cleanAddress = (PLACEHOLDERS.includes(address) || !address) ? '' : address;        boldValueRow('Tel:', fmtPhone(cleanPhone));pushHLineBytes(true, true, false, false);        // === SÔöÇÔûæPARÔöÇÔûæÔö╝┼Ş VEREN ===        dataRow('Siparis Veren:', '').forEach(r => line(r));pushHLineBytes(true, true, false, false);        // === ALICI: min 1 satir, max 4 satir ===        paddedBoldValueRow('Alici:', cleanName, 1, 4);pushHLineBytes(true, true, false, false);        // === ADRES: min 2 satir, max 10 satir ===        paddedBoldValueRow('Adres:', cleanAddress, 2, 10);        // Adres alt─▒nda 3 bo┼ş sat─▒r        for (let i = 0; i < 3; i++) {          line('|' + pad('', LBL) + '|' + pad('', VAL) + '|');        }pushHLineBytes(false, true, true, false);        // === TESLÔöÇÔûæMAT | TUTAR BAÔö╝┼ŞLIK ===        push(ESC, 0x45, 0x01);        line(colsRow('Teslimat', 'Tutar'));        push(ESC, 0x45, 0x00);        pushHLineBytes(false, false, true, true);        // === BOS SIPARIS ALANI (20 satir) ===        for (let i = 0; i < 20; i++) {          line('|' + ' '.repeat(CAL) + '|' + ' '.repeat(CAR) + '|');        }        // Alt kapan─▒┼ş: ÔööÔöÇÔöÇÔöÇÔöÇÔö┤ÔöÇÔöÇÔöÇÔöÇÔöİ  (0xC0=Ôöö, 0xC4=ÔöÇ, 0xC1=Ôö┤, 0xD9=Ôöİ)        bytes.push(0xC0);        for (let i = 0; i < CAL; i++) bytes.push(0xC4);        bytes.push(0xC1);        for (let i = 0; i < CAR; i++) bytes.push(0xC4);        bytes.push(0xD9);        bytes.push(LF);        // KaÔöÇ┼şÔöÇÔûÆt ilerlet + kes (~10mm hassas besleme, sonra kesme)        // 177├ö├Ñ├å71: 15mm azaltÔöÇÔûÆldÔöÇÔûÆ (Ôö£ÔòØst boÔö╝┼şluÔöÇ┼şu kÔöÇÔûÆsaltmak iÔö£─şin sonraki baskÔöÇÔûÆya yansÔöÇÔûÆr)        push(ESC, 0x4A, 71);     // ESC J 71: kaÔöÇ┼şÔöÇÔûÆdÔöÇÔûÆ ~10mm ilerlet        push(GS, 0x56, 0x42, 0x00);        return Buffer.from(bytes);      };      const receiptBuf = buildReceipt(); // 1 kopya      const ts = Date.now();      const binPath = path.join(os.tmpdir(), `siparis_escpos_${ts}.bin`);      fs.writeFileSync(binPath, receiptBuf);      // winspool.drv Ôö£ÔòØzerinden RAW yazdÔöÇÔûÆrma ├ö├ç├Â DLL cache ile hÔöÇÔûÆzlÔöÇÔûÆ (ilk baskÔöÇÔûÆda derlenir, sonraki baskÔöÇÔûÆlar ~100ms)      const psScript = getRawPrinterPsHeader() + `$printerName = '${selectedPrinter.replace(/'/g, "''")}'$bytes = [System.IO.File]::ReadAllBytes("${binPath.replace(/\\/g, '\\\\')}")$hPrinter = [IntPtr]::Zero$di = New-Object RawPrinterCore+DOCINFOA$di.pDocName  = "SIPARIS_FISI"$di.pDataType = "RAW"if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero)) {    [RawPrinterCore]::StartDocPrinter($hPrinter, 1, $di) | Out-Null    [RawPrinterCore]::StartPagePrinter($hPrinter) | Out-Null    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)    [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)    $written = 0    [RawPrinterCore]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written) | Out-Null    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)    [RawPrinterCore]::EndPagePrinter($hPrinter) | Out-Null    [RawPrinterCore]::EndDocPrinter($hPrinter) | Out-Null    [RawPrinterCore]::ClosePrinter($hPrinter) | Out-Null}Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction SilentlyContinue`;      const psPath = path.join(os.tmpdir(), `siparis_print_${ts}.ps1`);      fs.writeFileSync(psPath, psScript, 'utf-8');      return new Promise((resolve) => {        child_process.execFile(          'powershell',          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],          { timeout: 30000 },          (err) => {            try { fs.unlinkSync(psPath); } catch (e) { }            if (err) {              console.error('[Print] RAW yazdÔöÇÔûÆrma hatasÔöÇÔûÆ:', err);              resolve({ success: false, error: err.message });            } else {              console.log('[Print] ESC/POS RAW yazdÔöÇÔûÆrma baÔö╝┼şarÔöÇÔûÆlÔöÇÔûÆ.');              resolve({ success: true });            }          }        );      });    } catch (error) {      console.error('[Print] ÔöÇÔûæstisna:', error);      return { success: false, error: error.message };    }  });  // ====== SINAMA SAYFASI YAZDIRMA (ESC/POS RAW PROTOCOL) ======      ipcMain.handle('print-test-page', async (event, printerName) => {        try {          console.log('[TestPrint] ESC/POS RAW sÔöÇÔûÆnama sayfasÔöÇÔûÆ:', printerName);          const tarih = new Date().toLocaleDateString('tr-TR');          const saat = new Date().toLocaleTimeString('tr-TR');          const LINE_WIDTH = 42;          const ESC = 0x1B;          const GS = 0x1D;          const LF = 0x0A;          const sepLine = Array(LINE_WIDTH).fill(0x2D);          // PC857 TÔö£ÔòØrkÔö£─şe kod sayfasÔöÇÔûÆ ├ö├ç├Â ESC t 0x12 ile eÔö╝┼şleÔö╝┼şir          // Eski 'binary' encode: Ôö╝┼ş├ö├Ñ├å'_', ÔöÇ┼ş├ö├Ñ├åboÔö╝┼ş karakter hatalarÔöÇÔûÆnÔöÇÔûÆ dÔö£ÔòØzeltir          // Turkce karakterler ASCII karsiliklarina donusturulur (yazici uyumlulugu)          const normalizeTR = (str) => (str || '').toString()            .replace(/\u015f/g, 's').replace(/\u015e/g, 'S')            .replace(/\u011f/g, 'g').replace(/\u011e/g, 'G')            .replace(/\u0131/g, 'i').replace(/\u0130/g, 'I')            .replace(/\u00e7/g, 'c').replace(/\u00c7/g, 'C')            .replace(/\u00f6/g, 'o').replace(/\u00d6/g, 'O')            .replace(/\u00fc/g, 'u').replace(/\u00dc/g, 'U')            .replace(/\u00e2/g, 'a').replace(/\u00ea/g, 'e')            .replace(/\u00ee/g, 'i').replace(/\u00f4/g, 'o')            .replace(/\u00fb/g, 'u').replace(/\u00e0/g, 'a');          const textToBytes = (str) => {            const s = normalizeTR(str);            const result = [];            for (let i = 0; i < s.length; i++) result.push(s.charCodeAt(i) & 0x7F);            return result;          };          const bytes = [];          const push = (...args) => args.forEach(b => bytes.push(b));          const pushArr = (arr) => arr.forEach(b => bytes.push(b));          push(ESC, 0x40); // Init          push(ESC, 0x74, 0x12); // PC857 TÔö£ÔòØrkÔö£─şe kod sayfasÔöÇÔûÆ          // BaÔö╝┼şlÔöÇÔûÆk (OrtalÔöÇÔûÆ, BÔö£ÔòØyÔö£ÔòØk, KalÔöÇÔûÆn)          push(ESC, 0x61, 0x01); // orta          push(ESC, 0x45, 0x01); // bold          push(ESC, 0x21, 0x30); // Double width/height          pushArr(textToBytes('SINAMA SAYFASI'));          push(LF);          push(ESC, 0x21, 0x00); // normal          push(ESC, 0x45, 0x00); // bold off          push(ESC, 0x61, 0x01);          pushArr(textToBytes('Caller ID Sistemi'));          push(LF);          push(ESC, 0x61, 0x00); // sola          pushArr(sepLine); push(LF);          pushArr(textToBytes(`Yazici: ${printerName}`)); push(LF);          pushArr(textToBytes(`Tarih:  ${tarih}`)); push(LF);          pushArr(textToBytes(`Saat:   ${saat}`)); push(LF);          pushArr(sepLine); push(LF);          // Mesaj satÔöÇÔûÆrlarÔöÇÔûÆ          const msg = "Bu yaziyi okuyabiliyorsaniz; Yazici bilgisayariniza nizami bir sekilde kurulmus, 'Caller ID' programina tanitilmis ve stabil bir sekilde calisiyordur.";          for (let i = 0; i < msg.length; i += LINE_WIDTH) {            pushArr(textToBytes(msg.substring(i, i + LINE_WIDTH)));            push(LF);          }          pushArr(sepLine); push(LF);          // KaÔöÇ┼şÔöÇÔûÆt ilerlet + Kes          for (let i = 0; i < 10; i++) push(LF);          push(GS, 0x56, 0x42, 0x00);          const testBuf = Buffer.from(bytes);          const ts = Date.now();          const binPath = path.join(os.tmpdir(), `test_escpos_${ts}.bin`);          fs.writeFileSync(binPath, testBuf);          // DLL cache ile hÔöÇÔûÆzlÔöÇÔûÆ RAW yazdÔöÇÔûÆrma          const psScript = getRawPrinterPsHeader() + `$printerName = '${printerName.replace(/'/g, "''")}'$bytes = [System.IO.File]::ReadAllBytes("${binPath.replace(/\\/g, '\\\\')}")$hPrinter = [IntPtr]::Zero$di = New-Object RawPrinterCore+DOCINFOA$di.pDocName  = "TEST_PAGE"$di.pDataType = "RAW"if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero)) {    [RawPrinterCore]::StartDocPrinter($hPrinter, 1, $di) | Out-Null    [RawPrinterCore]::StartPagePrinter($hPrinter) | Out-Null    $ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)    [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)    $written = 0    [RawPrinterCore]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written) | Out-Null    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)    [RawPrinterCore]::EndPagePrinter($hPrinter) | Out-Null    [RawPrinterCore]::EndDocPrinter($hPrinter) | Out-Null    [RawPrinterCore]::ClosePrinter($hPrinter) | Out-Null}Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction SilentlyContinue`;          const psPath = path.join(os.tmpdir(), `test_print_${ts}.ps1`);          fs.writeFileSync(psPath, psScript, 'utf-8');          return new Promise((resolve) => {            child_process.execFile(              'powershell',              ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath],              { timeout: 30000 },              (err) => {                try { fs.unlinkSync(psPath); } catch (e) { }                if (err) {                  console.error('[TestPrint] RAW hatasÔöÇÔûÆ:', err);                  resolve({ success: false, error: err.message });                } else {                  console.log('[TestPrint] ESC/POS RAW sÔöÇÔûÆnama baÔö╝┼şarÔöÇÔûÆlÔöÇÔûÆ.');                  resolve({ success: true });                }              }            );          });        } catch (error) {          console.error('[TestPrint] ÔöÇÔûæstisna:', error);          return { success: false, error: error.message };        }      });  app.on('window-all-closed', () => {    if (process.platform !== 'darwin') app.quit();  });  ipcMain.on('ping', (event, arg) => {    console.log('React (Frontend) tarafÔöÇÔûÆndan mesaj alÔöÇÔûÆndÔöÇÔûÆ:', arg);    event.reply('pong', 'Electron (Backend) iletiÔö╝┼şim kurdu!');  });  // Pencere Kontrol IPC'leri  ipcMain.on('window-minimize', () => {    if (mainWindow) mainWindow.minimize();  });  ipcMain.on('window-maximize', () => {    if (mainWindow) {      if (mainWindow.isMaximized()) {        mainWindow.unmaximize();      } else {        mainWindow.maximize();      }    }  });  ipcMain.on('window-close', () => {    if (mainWindow) mainWindow.close();  });  ipcMain.on('open-external', (event, url) => {    shell.openExternal(url);  });  ipcMain.on('save-app-state', (event, state) => {    stateStore.save(state);  });  ipcMain.handle('get-app-state', () => {    return stateStore.load();  });  ipcMain.handle('get-usb-status', () => {    return bridgeProcess !== null;  });});
+\ No newline at end of file
