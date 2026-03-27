@@ -15,7 +15,8 @@ import {
   Loader2,
   Eye,
   EyeOff,
-  Globe
+  Globe,
+  BarChart2
 } from 'lucide-react';
 import './Settings.css';
 import { useLanguage } from './LanguageContext.jsx';
@@ -380,6 +381,7 @@ const Settings = () => {
     { id: 'yazici', icon: Printer, label: t('menuPrinter') },
     { id: 'parola', icon: KeyRound, label: t('menuPassword') },
     { id: 'dil', icon: Globe, label: t('menuLanguage') },
+    { id: 'raporlama', icon: BarChart2, label: 'Raporlama' },
     { id: 'guncelleme', icon: RefreshCw, label: t('menuUpdate') },
     { id: 'log', icon: FileText, label: t('menuLog') },
     { id: 'yonetici', icon: ShieldAlert, label: t('menuAdmin') },
@@ -512,6 +514,7 @@ const Settings = () => {
     );
 
     switch (activeTab) {
+      case 'raporlama': return defaultPlaceholder('Raporlama');
       case 'hat': return (
         <div className="printer-section">
           <h3>{t('hatSettingsTitle')}</h3>
