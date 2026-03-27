@@ -1200,18 +1200,60 @@ app.whenReady().then(() => {
     return null;
   });
 
-  //   // Yazıcı Gerçek Zamanlı Durum Kontrolü (TCP Bağlantı Testi)
-  // Ağ yazıcısı için: PS ile IP al → TCP bağlantısı (9100/631/80) dene.
-  // USB/paylaşımlı yazıcı için: Get-Printer PrinterStatus'a fallback.
+  //   // Yazıcı Gerçek Zamanlı Durum Kontrolü
+  // Strateji (öncelik sırasıyla):
+  //   1. Electron getPrintersAsync() — USB/usbprint.inf için en güvenilir
+  //   2. TCP port testi — ağ yazıcıları için
+  //   3. PowerShell Get-Printer — son çare
   ipcMain.handle('get-printer-status', async (event, printerName) => {
     if (!printerName) return 'not_selected';
 
+    console.log(`[Printer] Durum kontrolü: "${printerName}"`);
+
+    // ══ ADIM 1: Electron/Chromium getPrintersAsync() — BİRİNCİL ══
+    // USB (usbprint.inf dahil), paylaşımlı ve ağ yazıcıları için çalışır.
+    try {
+      const sysPrinters = mainWindow ? await mainWindow.webContents.getPrintersAsync() : [];
+      console.log(`[Printer] Sistemde ${sysPrinters.length} yazıcı bulundu:`, sysPrinters.map(p => p.name));
+
+      // Tam isim eşleşmesi
+      let match = sysPrinters.find(p =>
+        p.name === printerName || p.displayName === printerName
+      );
+
+      // Tam eşleşme yoksa — büyük/küçük harf ve boşluk farkını görmezden gel
+      if (!match) {
+        const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        match = sysPrinters.find(p =>
+          norm(p.name) === norm(printerName) || norm(p.displayName) === norm(printerName)
+        );
+      }
+
+      // Kısmi eşleşme — yazıcı adının bir kısmı uyuşuyorsa
+      if (!match) {
+        const normPN = (printerName || '').toLowerCase();
+        match = sysPrinters.find(p =>
+          (p.name || '').toLowerCase().includes(normPN) ||
+          normPN.includes((p.name || '').toLowerCase())
+        );
+      }
+
+      if (match) {
+        // Chromium printer status: 0=Normal/Hazır, diğerleri sorunlu
+        console.log(`[Printer] Electron eşleşme bulundu: "${match.name}" status=${match.status}`);
+        return match.status === 0 ? 'ready' : 'not_ready';
+      }
+
+      console.log(`[Printer] Electron listesinde yazıcı bulunamadı, TCP/PS fallback deneniyor...`);
+    } catch (electronErr) {
+      console.log('[Printer] Electron getPrintersAsync hatası:', electronErr.message);
+    }
+
+    // ══ ADIM 2: TCP Port testi (ağ yazıcıları için) ══
     const { exec } = child_process;
     const net = require('net');
-    // Tek tırnak ve çift tırnağı temizle — PS komut satırı güvenliği
     const escaped = printerName.replace(/'/g, "''").replace(/"/g, '');
 
-    // Yardımcı: tek bir TCP portunu dene
     const tryTcp = (ip, port, timeoutMs) => new Promise((res) => {
       const sock = new net.Socket();
       let done = false;
@@ -1223,91 +1265,46 @@ app.whenReady().then(() => {
       try { sock.connect(port, ip); } catch (_) { finish(false); }
     });
 
-    // Adım 1: Yazıcının ağ IP'sini tek satır PS komutuyla al (SON DERECE önemli: tek satır!)
     const ip = await new Promise((res) => {
       const cmd = `powershell -NoProfile -NonInteractive -Command "(Get-PrinterPort -Name (Get-Printer -Name '${escaped}' -ErrorAction Stop).PortName -ErrorAction Stop).PrinterHostAddress"`;
-      exec(cmd, { timeout: 8000 }, (err, stdout, stderr) => {
+      exec(cmd, { timeout: 6000 }, (err, stdout) => {
         const val = (stdout || '').trim();
-        console.log(`[Printer] IP query → stdout:'${val}' err:${err ? err.message : 'none'}`);
         res(err || !val ? '' : val);
       });
     });
 
     if (ip) {
-      // Ağ yazıcısı — TCP ile gerçek bağlantı testi
-      console.log(`[Printer] Testing TCP on ${ip} ...`);
-      if (await tryTcp(ip, 9100, 2000)) { console.log('[Printer] READY:9100'); return 'ready'; }
-      if (await tryTcp(ip, 631, 2000)) { console.log('[Printer] READY:631'); return 'ready'; }
-      if (await tryTcp(ip, 80, 2000)) { console.log('[Printer] READY:80'); return 'ready'; }
-      console.log('[Printer] TCP bails out, falling back to spooler/WMI check.');
+      console.log(`[Printer] Ağ yazıcısı IP: ${ip} — TCP test ediliyor...`);
+      if (await tryTcp(ip, 9100, 2000)) return 'ready';
+      if (await tryTcp(ip, 631, 2000)) return 'ready';
+      if (await tryTcp(ip, 80, 2000)) return 'ready';
     }
 
-    // IP alınamadıysa veya TCP başarısızsa Spooler/WMI kontrolüne düşeriz
-    const usbStatus = await new Promise((res) => {
-      if (ip) {
-        // Ağ yazıcısı için sadece Get-Printer kullan (WMI ağda zaman aşımına uğrayabiliyor)
-        const cmdNet = `powershell -NoProfile -NonInteractive -Command "$p=Get-Printer -Name '${escaped}' -ErrorAction Stop; Write-Output \\"$($p.WorkOffline)\\"; Write-Output \\"-1\\"; Write-Output \\"$($p.PrinterStatus)\\""`;
-        exec(cmdNet, { timeout: 8000 }, (errN, outN) => {
-          if (errN) {
-            console.log(`[Printer] Net check error: ${errN.message}`);
-            res({ workOffline: false, wmiStatus: -1, spoolerStatus: 'unknown' });
-            return;
-          }
-          const lines = (outN || '').trim().split(/\r?\n/).map(l => l.trim());
-          const workOffline = (lines[0] || '').toLowerCase() === 'true';
-          const spoolerStatus = (lines[2] || '').toLowerCase();
-          console.log(`[Printer] NetFallback→ WorkOffline:${workOffline} SpoolerStatus:${spoolerStatus}`);
-          res({ workOffline, wmiStatus: -1, spoolerStatus });
-        });
-      } else {
-        // USB/Paylaşılan yazıcı için WMI + Get-Printer kullan
-        const wmiName = escaped.replace(/\\/g, '\\\\');
-        const cmd3 = `powershell -NoProfile -NonInteractive -Command "$p=Get-Printer -Name '${escaped}' -ErrorAction Stop;$w=(Get-WmiObject -Class Win32_Printer -Filter \\"Name='${wmiName}'\\" -ErrorAction SilentlyContinue);Write-Output \\"$($p.WorkOffline)\\";Write-Output \\"$($w.PrinterStatus)\\";Write-Output \\"$($p.PrinterStatus)\\""`;
-        exec(cmd3, { timeout: 8000 }, (err3, out3) => {
-          if (err3) {
-            console.log(`[Printer] USB check error: ${err3.message}`);
-            res({ workOffline: false, wmiStatus: -1, spoolerStatus: 'unknown' });
-            return;
-          }
-          const lines = (out3 || '').trim().split(/\r?\n/).map(l => l.trim());
-          const workOffline = (lines[0] || '').toLowerCase() === 'true';
-          const wmiStatus = parseInt(lines[1] || '0', 10); // 3=Idle, 7=Offline
-          const spoolerStatus = (lines[2] || '').toLowerCase();
-          console.log(`[Printer] USB→ WorkOffline:${workOffline} WmiStatus:${wmiStatus} SpoolerStatus:${spoolerStatus}`);
-          res({ workOffline, wmiStatus, spoolerStatus });
-        });
-      }
+    // ══ ADIM 3: PowerShell Get-Printer — Son çare ══
+    const psResult = await new Promise((res) => {
+      const cmd = `powershell -NoProfile -NonInteractive -Command "$p=Get-Printer -Name '${escaped}' -ErrorAction Stop; Write-Output \\"$($p.WorkOffline)\\"; Write-Output \\"$($p.PrinterStatus)\\""`;
+      exec(cmd, { timeout: 8000 }, (err, out) => {
+        if (err) { res(null); return; }
+        const lines = (out || '').trim().split(/\r?\n/).map(l => l.trim());
+        const workOffline = (lines[0] || '').toLowerCase() === 'true';
+        const spoolerStatus = (lines[1] || '').toLowerCase();
+        console.log(`[Printer] PS fallback → WorkOffline:${workOffline} Status:${spoolerStatus}`);
+        res({ workOffline, spoolerStatus });
+      });
     });
-    // WorkOffline=True → kesinlikle bağlı değil
-    if (usbStatus.workOffline) return 'not_ready';
-    // WMI PrinterStatus=7 → Offline (USB kablosu çekildi, spooler henüz güncellemedi)
-    if (usbStatus.wmiStatus === 7) return 'not_ready';
-    // WMI status 3=Idle (hazır), 5=Printing = ready olarak kabul et
-    if (usbStatus.wmiStatus === 3 || usbStatus.wmiStatus === 5) return 'ready';
-    // Spooler durumu: yalnızca bilinen "bağlı değil" durumlarını reddet
-    const badSpoolerStates = ['offline', 'error', 'not_ready'];
-    if (badSpoolerStates.some(b => usbStatus.spoolerStatus.includes(b))) return 'not_ready';
 
-    // ════ FALLBACK: Chromium/Electron getPrintersAsync ════
-    // PowerShell belirsiz sonuç döndürdüğünde veya WMI erişilemezde kullan.
-    // Electron'un kendi yazıcı listesinde bu yazıcı varsa VE status==0 ise ready say.
-    try {
-      const sysPrinters = mainWindow ? await mainWindow.webContents.getPrintersAsync() : [];
-      const match = sysPrinters.find(p =>
-        p.name === printerName || p.displayName === printerName
-      );
-      if (match) {
-        // Chromium status 0 = normal/hazır, diğerleri hata
-        console.log(`[Printer] Chromium fallback → status:${match.status} isDefault:${match.isDefault}`);
-        return match.status === 0 ? 'ready' : 'not_ready';
-      }
-    } catch (fbErr) {
-      console.log('[Printer] Chromium fallback hatası:', fbErr.message);
+    if (psResult) {
+      if (psResult.workOffline) return 'not_ready';
+      const bad = ['offline', 'error'];
+      if (bad.some(b => psResult.spoolerStatus.includes(b))) return 'not_ready';
+      return 'ready';
     }
 
-    // Hiçbir kontrolden geçemediyse ve WorkOffline=false ise bağlı kabul et
-    return 'ready';
+    // Hiçbir kontrol sonuç vermediyse: yazıcı sistem listesinde yok → seçili değil
+    console.log('[Printer] Yazıcı hiçbir yöntemle bulunamadı.');
+    return 'not_ready';
   });
+
 
   // ====== RAW HARDWARE CUT (YARDIMCI FONKSİYON) ======
   // Sadece kağıtı ilerletir ve keser. Yazdırma işleminden sonra çağırılmalıdır.
