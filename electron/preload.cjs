@@ -100,6 +100,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   verifyPassword: (pwd) => ipcRenderer.invoke('verify-password', pwd),
   verifySecretAnswer: (ans) => ipcRenderer.invoke('verify-secret-answer', ans),
   resetPassword: (newPwd) => ipcRenderer.invoke('reset-password', newPwd),
+  passwordSuccess: () => ipcRenderer.send('password-success'),
+  getSecretQuestion: () => ipcRenderer.invoke('get-secret-question'),
 
   // Yönetici Şifresi
   verifyAdminPassword: (pwd) => ipcRenderer.invoke('verify-admin-password', pwd),

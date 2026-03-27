@@ -181,6 +181,54 @@ function createWindow() {
   });
 }
 
+// ====== PAROLA KONTROL FONKSİYONU ======
+// Lisans doğrulandıktan sonra çağrılır. Parola aktifse önce lock ekranı açar,
+// doğru parola girilince ana pencereyi açar. Parola aktif değilse direkt açar.
+function openAppWithPasswordCheck() {
+  const passwordConfigPath = path.join(app.getPath('userData'), 'password-config.json');
+  let pwdConfig = { enabled: false };
+  try {
+    if (fs.existsSync(passwordConfigPath)) {
+      pwdConfig = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));
+    }
+  } catch (e) { /* ignore */ }
+
+  if (pwdConfig.enabled && pwdConfig.passwordHash) {
+    // Parola aktif — lock ekranını göster
+    const lockWin = new BrowserWindow({
+      width: 480, height: 600,
+      resizable: false,
+      frame: false,
+      center: true,
+      show: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, '../electron/preload.cjs')
+      }
+    });
+    lockWin.setMenu(null);
+    lockWin.loadFile(path.join(__dirname, 'password-lock.html'));
+    lockWin.once('ready-to-show', () => lockWin.show());
+
+    // Lock ekranından başarılı giriş sinyali
+    ipcMain.once('password-success', () => {
+      lockWin.close();
+      createWindow();
+      connectToCallerId();
+    });
+
+    // Kullanıcı lock penceresini kapatmaya çalışırsa uygulamayı kapat
+    lockWin.on('closed', () => {
+      if (!mainWindow) app.quit();
+    });
+  } else {
+    // Parola aktif değil — direkt aç
+    createWindow();
+    connectToCallerId();
+  }
+}
+
 // ====== MODAL PENCERE YARDIMCI FONKSİYONU ======
 // İleride eklenecek tüm alt pencereler (Ayarlar, Yardım, vb.) bu fonksiyon ile oluşturulmalıdır.
 // Bu sayede her alt pencere otomatik olarak modal olur ve ana pencereyi bloklar.
@@ -309,8 +357,7 @@ app.whenReady().then(() => {
   ipcMain.on('license-success', () => {
     if (licenseWindow) { licenseWindow.close(); licenseWindow = null; }
     if (!mainWindow) {
-      createWindow();
-      connectToCallerId();
+      openAppWithPasswordCheck();
     } else {
       mainWindow.show();
     }
@@ -321,17 +368,15 @@ app.whenReady().then(() => {
   // Bu değişken sadece geliştirici ortamında tanımlıdır; kurulu .exe'de asla mevcut değildir.
   if (process.env.DEV_MODE === 'true') {
     console.log('[License] DEV_MODE aktif — lisans kontrolü atlanıyor.');
-    createWindow();
-    connectToCallerId();
+    openAppWithPasswordCheck();
   } else {
     const local = readLocalLicense();
     if (local && local.licenseKey) {
       console.log('[License] Kayıtlı lisans bulundu, doğrulanıyor...');
       verifyLicense(local.licenseKey).then(result => {
         if (result.valid) {
-          console.log('[License] Lisans geçerli — ana pencere açılıyor.');
-          createWindow();
-          connectToCallerId();
+          console.log('[License] Lisans geçerli — parola kontrolü yapılıyor.');
+          openAppWithPasswordCheck();
         } else {
           console.warn('[License] Lisans geçersiz:', result.message);
           openLicenseWindow();
@@ -1006,6 +1051,14 @@ app.whenReady().then(() => {
     } catch (e) { return false; }
   });
 
+  ipcMain.handle('get-secret-question', () => {
+    try {
+      if (!fs.existsSync(passwordConfigPath)) return '';
+      const data = JSON.parse(fs.readFileSync(passwordConfigPath, 'utf-8'));
+      return data.secretQuestion || '';
+    } catch (e) { return ''; }
+  });
+
   ipcMain.handle('reset-password', (event, newPassword) => {
     try {
       if (!fs.existsSync(passwordConfigPath)) return { success: false };
@@ -1211,9 +1264,31 @@ app.whenReady().then(() => {
     if (usbStatus.workOffline) return 'not_ready';
     // WMI PrinterStatus=7 → Offline (USB kablosu çekildi, spooler henüz güncellemedi)
     if (usbStatus.wmiStatus === 7) return 'not_ready';
-    // Spooler durumu kontrollü karşılaştırma
-    return (usbStatus.spoolerStatus === 'idle' || usbStatus.spoolerStatus === 'normal' || usbStatus.spoolerStatus === 'printing')
-      ? 'ready' : 'not_ready';
+    // WMI status 3=Idle (hazır), 5=Printing = ready olarak kabul et
+    if (usbStatus.wmiStatus === 3 || usbStatus.wmiStatus === 5) return 'ready';
+    // Spooler durumu: yalnızca bilinen "bağlı değil" durumlarını reddet
+    const badSpoolerStates = ['offline', 'error', 'not_ready'];
+    if (badSpoolerStates.some(b => usbStatus.spoolerStatus.includes(b))) return 'not_ready';
+
+    // ════ FALLBACK: Chromium/Electron getPrintersAsync ════
+    // PowerShell belirsiz sonuç döndürdüğünde veya WMI erişilemezde kullan.
+    // Electron'un kendi yazıcı listesinde bu yazıcı varsa VE status==0 ise ready say.
+    try {
+      const sysPrinters = mainWindow ? await mainWindow.webContents.getPrintersAsync() : [];
+      const match = sysPrinters.find(p =>
+        p.name === printerName || p.displayName === printerName
+      );
+      if (match) {
+        // Chromium status 0 = normal/hazır, diğerleri hata
+        console.log(`[Printer] Chromium fallback → status:${match.status} isDefault:${match.isDefault}`);
+        return match.status === 0 ? 'ready' : 'not_ready';
+      }
+    } catch (fbErr) {
+      console.log('[Printer] Chromium fallback hatası:', fbErr.message);
+    }
+
+    // Hiçbir kontrolden geçemediyse ve WorkOffline=false ise bağlı kabul et
+    return 'ready';
   });
 
   // ====== RAW HARDWARE CUT (YARDIMCI FONKSİYON) ======
@@ -1600,7 +1675,7 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
       };
 
 
-      const receiptBuf = Buffer.concat([buildReceipt()]); // 1 kopya (geçici olarak 1'e düşürüldü, sonradan 2'ye çıkarılacak)
+      const receiptBuf = Buffer.concat([buildReceipt(), buildReceipt()]); // 2 kopya
       const ts = Date.now();
       const binPath = path.join(os.tmpdir(), `siparis_escpos_${ts}.bin`);
       fs.writeFileSync(binPath, receiptBuf);
