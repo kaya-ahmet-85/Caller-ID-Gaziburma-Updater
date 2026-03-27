@@ -1239,9 +1239,10 @@ app.whenReady().then(() => {
       }
 
       if (match) {
-        // Chromium printer status: 0=Normal/Hazır, diğerleri sorunlu
+        // USB termal yazıcılar (GP-U80160 vb.) çalışıyor olsa bile status != 0 döndürebilir.
+        // Sadece kesin hata (status=2) durumunda not_ready döndür; listede var ise ready say.
         console.log(`[Printer] Electron eşleşme bulundu: "${match.name}" status=${match.status}`);
-        return match.status === 0 ? 'ready' : 'not_ready';
+        return match.status === 2 ? 'not_ready' : 'ready';
       }
 
       console.log(`[Printer] Electron listesinde yazıcı bulunamadı, TCP/PS fallback deneniyor...`);
