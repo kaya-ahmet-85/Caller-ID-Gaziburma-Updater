@@ -112,10 +112,18 @@ function createWindow() {
     mainWindow.show();
 
     // ── Otomatik Güncelleme Kontrolü ──
-    // Üretim modunda pencere açıldıktan 30 saniye sonra GitHub'dan sürüm kontrolü yapar.
+    // Üretim modunda pencere açıldıktan 10 saniye sonra GitHub'dan sürüm kontrolü yapar.
     // Yeni sürüm varsa ana pencereye bildirim gönderir (toast olarak görünür).
     if (!isDev) {
-      setTimeout(() => {
+      const checkForUpdate = () => {
+        // package.json'dan güvenilir versiyon oku (app.getVersion() bazı build'lerde yanlış dönebilir)
+        let currentVersion = app.getVersion();
+        try {
+          const pkgPath = require('path').join(__dirname, '../package.json');
+          const pkg = JSON.parse(require('fs').readFileSync(pkgPath, 'utf-8'));
+          currentVersion = pkg.version || currentVersion;
+        } catch (e) { /* fallback: app.getVersion() */ }
+
         const GH_TOKEN = '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';
         const options = {
           hostname: 'api.github.com',
@@ -133,10 +141,9 @@ function createWindow() {
           res.on('end', () => {
             try {
               const release = JSON.parse(data);
-              const latestTag = release.tag_name; // örn: "v1.2.8"
+              const latestTag = release.tag_name; // örn: "v1.3.0"
               if (!latestTag) return;
-              const latestVersion = latestTag.replace(/^v/i, ''); // "1.2.8"
-              const currentVersion = app.getVersion();            // "1.2.7"
+              const latestVersion = latestTag.replace(/^v/i, ''); // "1.3.0"
 
               // Semver karşılaştırması: sadece GERÇEKTEN daha yeni bir sürüm varsa bildir
               const isNewer = (latest, current) => {
@@ -149,8 +156,9 @@ function createWindow() {
                 return false;
               };
 
+              console.log(`[AutoUpdate] Kontrol: mevcut=${currentVersion} | GitHub=${latestVersion}`);
               if (isNewer(latestVersion, currentVersion)) {
-                console.log(`[AutoUpdate] Yeni sürüm bulundu: ${latestVersion} (mevcut: ${currentVersion})`);
+                console.log(`[AutoUpdate] Yeni sürüm bulundu: ${latestVersion}`);
                 if (mainWindow && !mainWindow.isDestroyed()) {
                   mainWindow.webContents.send('auto-update-available', {
                     latestVersion: `v${latestVersion}`,
@@ -172,8 +180,14 @@ function createWindow() {
           console.log('[AutoUpdate] Bağlantı hatası:', e.message);
         });
         req.end();
-      }, 30000); // 30 saniye bekle
+      };
+
+      // İlk kontrol: 10 saniye sonra
+      setTimeout(checkForUpdate, 10000);
+      // Periyodik kontrol: her 30 dakikada bir
+      setInterval(checkForUpdate, 30 * 60 * 1000);
     }
+
   });
 
   mainWindow.on('closed', () => {
