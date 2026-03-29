@@ -158,6 +158,7 @@ function AppInner() {
     return () => clearTimeout(timer);
   }, [box4Query]);
   const [isTitleBarVisible, setIsTitleBarVisible] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(true); // Başlangıçta maximize (app maximize başlatır)
   const [usbStatus, setUsbStatus] = useState(false);
   const [internetStatus, setInternetStatus] = useState(navigator.onLine);
   const [printerStatus, setPrinterStatus] = useState(false);
@@ -206,24 +207,49 @@ function AppInner() {
     return cleanup;
   }, []);
 
-  // Title Bar Mouse Sensörü (Electron CSS bug'ına karşı React ile tam çözüm)
+  // Title Bar Mouse Sensörü — sadece maximize modda çalışır
+  // Windowed modda title bar her zaman görünür olduğundan bu sensöre gerek yok
   useEffect(() => {
     const handleMouseMove = (e) => {
+      if (!isMaximized) return; // Windowed modda mouse sensörü devre dışı
       // SADECE farenin ucu (0-2 piksel) ekranın tavanına dayandığında açıl
       if (e.clientY <= 2) {
         setIsTitleBarVisible(true);
       } else if (e.clientY > 60) {
-        // Çubuğun içindeyken kapanmasını engellemek için, barın dışına çıkınca gizleyeceğiz
         setIsTitleBarVisible(false);
       }
     };
 
     document.addEventListener('mousemove', handleMouseMove);
+    return () => document.removeEventListener('mousemove', handleMouseMove);
+  }, [isMaximized]);
 
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-    };
+  // Pencere durumunu Electron'dan al ve değişiklikleri dinle
+  useEffect(() => {
+    if (window.electronAPI?.getWindowMaximized) {
+      window.electronAPI.getWindowMaximized().then(maximized => {
+        setIsMaximized(maximized);
+        if (!maximized) setIsTitleBarVisible(false);
+      });
+    }
+    if (window.electronAPI?.onWindowStateChanged) {
+      const cleanup = window.electronAPI.onWindowStateChanged(({ isMaximized: maximized }) => {
+        setIsMaximized(maximized);
+        if (!maximized) setIsTitleBarVisible(false); // Windowed'a geçince hover bar'a gerek yok
+      });
+      return cleanup;
+    }
   }, []);
+
+  // Windowed modda html'e scroll sınıfı ekle — sayfa scroll edilebilir olsun
+  useEffect(() => {
+    if (!isMaximized) {
+      document.documentElement.classList.add('windowed-scroll');
+    } else {
+      document.documentElement.classList.remove('windowed-scroll');
+    }
+    return () => document.documentElement.classList.remove('windowed-scroll');
+  }, [isMaximized]);
 
   // Gün Değişimi Kontrolü ve Saat Güncellemesi
   useEffect(() => {
@@ -859,14 +885,19 @@ function AppInner() {
 
   return (
     <div 
-      className="app-container"
+      className={`app-container${!isMaximized ? ' windowed' : ''}`}
       style={{
         ...(scaleSettings?.sidebar?.width ? { '--sidebar-width': `${scaleSettings.sidebar.width}px` } : {}),
         ...(scaleSettings?.sidebar?.height ? { '--sidebar-height': `${scaleSettings.sidebar.height}px` } : {}),
         ...(scaleSettings?.callList?.width ? { '--calllist-width': `${scaleSettings.callList.width}px` } : {}),
         ...(scaleSettings?.callList?.height ? { '--calllist-height': `${scaleSettings.callList.height}px` } : {}),
         ...(scaleSettings?.hatBoxes?.width ? { '--hat-boxes-width': `${scaleSettings.hatBoxes.width}px`, '--hat-boxes-flex-grow': 0 } : {}),
-        ...(scaleSettings?.hatBoxes?.height ? { '--hat-boxes-height': `${scaleSettings.hatBoxes.height}px` } : {})
+        ...(scaleSettings?.hatBoxes?.height ? { '--hat-boxes-height': `${scaleSettings.hatBoxes.height}px` } : {}),
+        // Windowed modda title bar sabit görünür → içerik aşağıya kayar
+        paddingTop: isMaximized ? 0 : '44px',
+        // Windowed modda scroll için minimum yükseklik
+        minHeight: isMaximized ? '100vh' : 'auto',
+        height: isMaximized ? '100vh' : 'auto',
       }}
     >
       <style>{`
@@ -961,8 +992,8 @@ function AppInner() {
         </div>
       )}
 
-      {/* ÖZEL BAŞLIK ÇUBUĞU — fare ekran üstüne gelince kayarak açılır */}
-      <div className={`title-bar-content ${isTitleBarVisible ? 'visible' : ''}`}>
+      {/* ÖZEL BAŞLIK ÇUBUĞU — maximize modunda hover ile açılır, windowed modunda sabit görünür */}
+      <div className={`title-bar-content ${!isMaximized || isTitleBarVisible ? 'visible' : ''}`}>
         <div className="window-controls">
           <button onClick={handleMinimize} className="control-btn minimize" title="Simge Durumuna Küçült">
             <Minus size={16} />

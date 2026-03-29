@@ -145,4 +145,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('download-progress', handler);
     return () => ipcRenderer.removeListener('download-progress', handler);
   },
+
+  // Pencere Durumu (Maximize / Windowed)
+  getWindowMaximized: () => ipcRenderer.invoke('get-window-maximized'),
+  onWindowStateChanged: (cb) => {
+    const handler = (_, state) => cb(state);
+    ipcRenderer.on('window-state-changed', handler);
+    return () => ipcRenderer.removeListener('window-state-changed', handler);
+  },
 });

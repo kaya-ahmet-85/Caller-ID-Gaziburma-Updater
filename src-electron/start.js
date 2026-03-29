@@ -7,6 +7,11 @@ delete process.env.ELECTRON_RUN_AS_NODE;
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'development';
 
+// Geliştirme ortamında DEV_MODE'u zorla aktif et (lisans kontrolünü atla)
+if (process.env.NODE_ENV === 'development') {
+  process.env.DEV_MODE = 'true';
+}
+
 console.log("Starting Electron from:", __dirname);
 
 const electronBin = require('electron');

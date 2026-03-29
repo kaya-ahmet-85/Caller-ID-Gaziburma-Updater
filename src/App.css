@@ -32,17 +32,50 @@
   transform: translateY(0);
 }
 
-/* Dış kaydırma çubukları gizle */
+/* ── Maximize: tüm scroll'lar gizli ── */
 html::-webkit-scrollbar,
 body::-webkit-scrollbar,
-.app-container::-webkit-scrollbar,
 .main-content::-webkit-scrollbar {
   display: none !important;
   width: 0 !important;
 }
-html, body, .app-container, .main-content {
+html, body, .main-content {
   overflow: hidden !important;
   scrollbar-width: none;
+}
+.app-container {
+  overflow: hidden;
+}
+
+/* ── Windowed: html'e sınıf eklenince sayfa kayar ── */
+html.windowed-scroll {
+  overflow-y: auto !important;
+  height: auto !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(0,0,0,0.3) rgba(0,0,0,0.07) !important;
+}
+html.windowed-scroll::-webkit-scrollbar {
+  width: 8px !important;
+  display: block !important;
+}
+html.windowed-scroll::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.07);
+}
+html.windowed-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 4px;
+}
+html.windowed-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.45);
+}
+html.windowed-scroll body {
+  overflow-y: visible !important;
+  height: auto !important;
+}
+html.windowed-scroll .app-container {
+  overflow: visible;
+  height: auto !important;
+  min-height: 0;
 }
 
 .title-bar-drag {
@@ -318,6 +351,26 @@ html, body, .app-container, .main-content {
   overflow: hidden;
 }
 
+/* Windowed modda iç elemanlar sıkışmadan minimum yüksekliğe sahip olsun */
+html.windowed-scroll .sidebar {
+  height: auto;
+  min-height: 680px;
+}
+html.windowed-scroll .main-content {
+  min-height: 680px;
+  overflow: visible;
+}
+html.windowed-scroll .content-area {
+  min-height: 560px;
+  overflow: visible;
+}
+html.windowed-scroll .lines-grid {
+  min-height: 500px;
+}
+html.windowed-scroll .line-box {
+  min-height: 220px;
+}
+
 /* Üst Başlık (Header) */
 .top-header {
   height: 54px;
@@ -503,9 +556,10 @@ html, body, .app-container, .main-content {
 .line-content-wrapper {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start; /* Changed from center to align top */
+  align-items: stretch; /* Stretch so children can fill full height */
   gap: 16px;
   flex: 1;
+  min-height: 0;
   margin-top: -10px; /* Shift everything up */
 }
 
@@ -516,6 +570,7 @@ html, body, .app-container, .main-content {
   gap: 10px; /* Reverted gap */
   flex: 1;
   min-width: 0;
+  min-height: 0;
 }
 
 .detail-row {
@@ -531,39 +586,27 @@ html, body, .app-container, .main-content {
 .detail-row.address-row {
   align-items: flex-start;
   padding-top: 14px;
+  flex: 1; /* Kalan dikey alanı doldur */
+  min-height: 0;
 }
 
-/* Adres içeriği: yazı uzarsa scrollbar çıkar, kutu büyümez */
+/* Adres içeriği: kutu büyür, kaydırma çubuğu yok */
 .detail-row.address-row .detail-content {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .detail-row.address-row .detail-value {
   display: block;
-  max-height: 90px;        /* ~3,5 satır */
-  overflow-y: auto;
+  flex: 1;
+  overflow: hidden;
   line-height: 1.45;
   word-break: break-word;
   white-space: normal;
-  padding-right: 4px;      /* Scrollbar için boşluk */
-}
-
-/* İnce, tema uyumlu scrollbar */
-.detail-row.address-row .detail-value::-webkit-scrollbar {
-  width: 4px;
-}
-.detail-row.address-row .detail-value::-webkit-scrollbar-track {
-  background: rgba(0,0,0,0.05);
-  border-radius: 4px;
-}
-.detail-row.address-row .detail-value::-webkit-scrollbar-thumb {
-  background: rgba(0,0,0,0.2);
-  border-radius: 4px;
-}
-.detail-row.address-row .detail-value::-webkit-scrollbar-thumb:hover {
-  background: rgba(0,0,0,0.4);
 }
 
 .icon-wrapper {
@@ -627,9 +670,8 @@ html, body, .app-container, .main-content {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  /* Center buttons vertically relative to the 3-row container. 
-     Using margin-top to push them exactly to the middle row (Phone row) axis. */
   justify-content: center;
+  align-self: flex-start; /* Butonlar adres kutusuyla uzamasın */
   position: relative;
 }
 

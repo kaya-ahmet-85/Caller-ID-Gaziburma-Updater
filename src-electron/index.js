@@ -1,4 +1,4 @@
-﻿const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -195,6 +195,18 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+  });
+
+  // Pencere durumu değişince React'a bildir (maximize ↔ windowed)
+  mainWindow.on('maximize', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window-state-changed', { isMaximized: true });
+    }
+  });
+  mainWindow.on('unmaximize', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window-state-changed', { isMaximized: false });
+    }
   });
 }
 
@@ -1922,6 +1934,10 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
 });
 
 
+
+ipcMain.handle('get-window-maximized', () => {
+  return mainWindow ? mainWindow.isMaximized() : true;
+});
 
 app.on('window-all-closed', () => {
 
