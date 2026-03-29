@@ -111,15 +111,24 @@ const Settings = () => {
         setUpdateInfo({ error: 'Sunucuya bağlanılamadı.' });
         return;
       }
+      // API'den hata mesajı döndüyse
+      if (result.error) {
+        setUpdateStatus('error');
+        setUpdateInfo({ error: result.error });
+        return;
+      }
       if (result.updateAvailable) {
         setUpdateStatus('update-available');
-        setUpdateInfo({ latestVersion: result.latestVersion, currentVersion: result.currentVersion, releaseNotes: result.releaseNotes || '', url: result.url });
-      } else if (result.message?.includes('güncel') || result.upToDate || result.currentVersion) {
+        setUpdateInfo({
+          latestVersion: result.latestVersion,
+          currentVersion: result.currentVersion,
+          releaseNotes: result.releaseNotes || '',
+          url: result.url
+        });
+      } else {
+        // updateAvailable === false → güncel
         setUpdateStatus('up-to-date');
         setUpdateInfo({ currentVersion: result.currentVersion });
-      } else {
-        setUpdateStatus('up-to-date');
-        setUpdateInfo(null);
       }
     } catch (err) {
       setUpdateStatus('error');

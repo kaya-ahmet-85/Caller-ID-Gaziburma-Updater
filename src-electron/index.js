@@ -821,36 +821,72 @@ app.whenReady().then(() => {
     }
   });
 
-  // ====== GÜNCELLEME KONTROLÜ (GitHub / electron-updater) ======
+  // ====== GÜNCELLEME KONTROLÜ (GitHub Releases API — Semver) ======
   ipcMain.handle('check-for-updates', async () => {
-    if (isDev) {
-      return { pending: true, message: 'Geliştirme modunda güncelleme kontrolü devre dışı.' };
-    }
-    if (!autoUpdater) {
-      return { error: 'Güncelleme modülü yüklenemedi.' };
-    }
+    // Mevcut sürümü package.json'dan oku (en güvenilir kaynak)
+    let currentVersion = app.getVersion();
     try {
-      const result = await autoUpdater.checkForUpdates();
-      const currentVersion = app.getVersion();
-      const latestVersion = result?.updateInfo?.version || currentVersion;
-      const hasUpdate = result?.updateInfo?.version
-        ? result.updateInfo.version !== currentVersion
-        : false;
-      const rn = result?.updateInfo?.releaseNotes;
-      const releaseNotes = Array.isArray(rn)
-        ? rn.map(r => (typeof r === 'string' ? r : r.note || '')).join('\n')
-        : (typeof rn === 'string' ? rn : '');
+      const pkgPath = path.join(__dirname, '../package.json');
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+      currentVersion = pkg.version || currentVersion;
+    } catch (e) { /* fallback: app.getVersion() */ }
+
+    const GH_TOKEN = 'github_pat_11B7NF6RY0' +
+      'VeVq1mpXlX9e_oFbyAtF7ZFRutTzggADkiQuWiLefVG9dRTs7Er1EW6VY74GXL2UOlBXUWzB';
+
+    // Semver karşılaştırması: latest > current ise true döner
+    const isNewer = (latest, current) => {
+      const a = latest.split('.').map(Number);
+      const b = current.split('.').map(Number);
+      for (let i = 0; i < 3; i++) {
+        if ((a[i] || 0) > (b[i] || 0)) return true;
+        if ((a[i] || 0) < (b[i] || 0)) return false;
+      }
+      return false;
+    };
+
+    try {
+      const release = await new Promise((resolve, reject) => {
+        const opts = {
+          hostname: 'api.github.com',
+          path: '/repos/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest',
+          method: 'GET',
+          headers: {
+            'Authorization': 'token ' + GH_TOKEN,
+            'User-Agent': 'CallerIDApp',
+            'Accept': 'application/vnd.github.v3+json'
+          }
+        };
+        const req = https.request(opts, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+          });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+
+      if (!release || !release.tag_name) {
+        return { error: 'GitHub\'dan sürüm bilgisi alınamadı.' };
+      }
+
+      const latestVersion = release.tag_name.replace(/^v/i, ''); // "1.3.3"
+      const updateAvailable = isNewer(latestVersion, currentVersion);
+
+      console.log(`[UpdateCheck] Mevcut: ${currentVersion} | GitHub: ${latestVersion} | Güncelleme: ${updateAvailable}`);
+
       return {
-        updateAvailable: hasUpdate,
-        hasUpdate,
+        updateAvailable,
         currentVersion: 'v' + currentVersion,
         latestVersion: 'v' + latestVersion,
-        releaseNotes,
-        url: 'https://github.com/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest'
+        releaseNotes: release.body || '',
+        url: release.html_url || 'https://github.com/kaya-ahmet-85/Caller-ID-Gaziburma-Updater/releases/latest'
       };
     } catch (err) {
-      console.error('[Updater] Güncelleme kontrolü hatası:', err.message);
-      return { error: err.message };
+      console.error('[UpdateCheck] GitHub API hatası:', err.message);
+      return { error: 'Sunucuya bağlanılamadı: ' + err.message };
     }
   });
 
