@@ -67,9 +67,12 @@ const Settings = () => {
   };
 
   // Yazıcı state'leri
+  const [printerTab, setPrinterTab] = useState('siparis');
   const [printers, setPrinters] = useState([]);
   const [selectedPrinter, setSelectedPrinter] = useState(null);
   const [savedPrinter, setSavedPrinter] = useState(null);
+  const [selectedReportPrinter, setSelectedReportPrinter] = useState(null);
+  const [savedReportPrinter, setSavedReportPrinter] = useState(null);
   const [loadingPrinters, setLoadingPrinters] = useState(false);
   const [loadingTestPrint, setLoadingTestPrint] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -134,6 +137,66 @@ const Settings = () => {
       setUpdateStatus('error');
       setUpdateInfo({ error: err.message });
     }
+  };
+
+  // Raporlama state'i
+  const [reportStartDate, setReportStartDate] = useState(new Date().toLocaleDateString('en-CA'));
+  const [reportEndDate, setReportEndDate] = useState(new Date().toLocaleDateString('en-CA'));
+  const [reportLines, setReportLines] = useState({ 1: true, 2: true, 3: true });
+  const [printingReport, setPrintingReport] = useState(false);
+  const [reportSuccess, setReportSuccess] = useState(false);
+
+  const handlePrintReport = async () => {
+    if (!window.electronAPI) return;
+    if (!savedReportPrinter) {
+      alert("Lütfen önce 'Yazıcı(lar)' sekmesinden bir 'Rapor Yazıcısı' seçip kaydedin.");
+      return;
+    }
+
+    setPrintingReport(true);
+    try {
+      const appState = await window.electronAPI.getAppState();
+      const callHistory = appState?.callHistory || [];
+
+      const parseTrDate = (dStr) => {
+        if(!dStr) return null;
+        const parts = dStr.split('.');
+        if(parts.length !== 3) return null;
+        return new Date(`${parts[2]}-${parts[1]}-${parts[0]}T00:00:00`);
+      };
+
+      const start = new Date(reportStartDate); start.setHours(0,0,0,0);
+      const end = new Date(reportEndDate); end.setHours(23,59,59,999);
+
+      const filteredCalls = callHistory.filter((call) => {
+        const lineStr = call.lineLabel ? call.lineLabel.toString() : '';
+        if (lineStr && !reportLines[lineStr]) return false;
+
+        const callDate = parseTrDate(call.date);
+        if (callDate) {
+          if (callDate < start || callDate > end) return false;
+        }
+        return true;
+      });
+
+      if (filteredCalls.length === 0) {
+        alert("Seçilen kriterlere uyan hiçbir çağrı kaydı bulunamadı.");
+        setPrintingReport(false);
+        return;
+      }
+
+      const result = await window.electronAPI.printA4Report(filteredCalls, savedReportPrinter);
+      if (result && result.success) {
+        setReportSuccess(true);
+        setTimeout(() => setReportSuccess(false), 3000);
+      } else {
+        alert("Rapor yazdırılırken bir hata oluştu: " + result.error);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Hata: " + err.message);
+    }
+    setPrintingReport(false);
   };
 
   // Temayı yükle
@@ -331,13 +394,16 @@ const Settings = () => {
     if (!window.electronAPI) return;
     setLoadingPrinters(true);
     try {
-      const [printerList, saved] = await Promise.all([
+      const [printerList, savedOrder, savedReport] = await Promise.all([
         window.electronAPI.getPrinters(),
-        window.electronAPI.getPrinterSelection()
+        window.electronAPI.getPrinterSelection(),
+        window.electronAPI.getReportPrinterSelection ? window.electronAPI.getReportPrinterSelection() : Promise.resolve(null)
       ]);
       setPrinters(printerList || []);
-      setSavedPrinter(saved);
-      setSelectedPrinter(saved);
+      setSavedPrinter(savedOrder);
+      setSelectedPrinter(savedOrder);
+      setSavedReportPrinter(savedReport);
+      setSelectedReportPrinter(savedReport);
     } catch (error) {
       console.error('Yazıcı listesi yüklenemedi:', error);
     }
@@ -353,10 +419,11 @@ const Settings = () => {
 
   // Sınama sayfası yazdır
   const handleTestPrint = async () => {
-    if (!window.electronAPI || !selectedPrinter) return;
+    const printerToTest = printerTab === 'siparis' ? selectedPrinter : selectedReportPrinter;
+    if (!window.electronAPI || !printerToTest) return;
     setLoadingTestPrint(true);
     try {
-      const result = await window.electronAPI.printTestPage(selectedPrinter);
+      const result = await window.electronAPI.printTestPage(printerToTest);
       if (result.success) {
         setTestPrintSuccess(true);
         setTimeout(() => setTestPrintSuccess(false), 3000);
@@ -371,11 +438,19 @@ const Settings = () => {
 
   // Yazıcı seçimini kaydet
   const handleSavePrinter = async () => {
-    if (!window.electronAPI || !selectedPrinter) return;
+    if (!window.electronAPI) return;
     try {
-      const result = await window.electronAPI.savePrinterSelection(selectedPrinter);
-      if (result.success) {
-        setSavedPrinter(selectedPrinter);
+      let result;
+      if (printerTab === 'siparis') {
+        if (!selectedPrinter) return;
+        result = await window.electronAPI.savePrinterSelection(selectedPrinter);
+        if (result.success) setSavedPrinter(selectedPrinter);
+      } else {
+        if (!selectedReportPrinter) return;
+        result = await window.electronAPI.saveReportPrinterSelection(selectedReportPrinter);
+        if (result.success) setSavedReportPrinter(selectedReportPrinter);
+      }
+      if (result && result.success) {
         setSaveSuccess(true);
         setTimeout(() => setSaveSuccess(false), 3000);
       }
@@ -390,7 +465,7 @@ const Settings = () => {
     { id: 'yazici', icon: Printer, label: t('menuPrinter') },
     { id: 'parola', icon: KeyRound, label: t('menuPassword') },
     { id: 'dil', icon: Globe, label: t('menuLanguage') },
-    { id: 'raporlama', icon: BarChart2, label: 'Raporlama' },
+    { id: 'raporlama', icon: BarChart2, label: 'Raporlar' },
     { id: 'guncelleme', icon: RefreshCw, label: t('menuUpdate') },
     { id: 'log', icon: FileText, label: t('menuLog') },
     { id: 'yonetici', icon: ShieldAlert, label: t('menuAdmin') },
@@ -450,37 +525,41 @@ const Settings = () => {
     return (
       <>
         <div className="printer-list">
-          {printers.map((printer, idx) => (
-            <div
-              key={idx}
-              className={`printer-item ${selectedPrinter === printer.name ? 'selected' : ''}`}
-              onClick={() => setSelectedPrinter(printer.name)}
-            >
-              <div className="printer-radio">
-                <div className={`radio-outer ${selectedPrinter === printer.name ? 'checked' : ''}`}>
-                  {selectedPrinter === printer.name && <div className="radio-inner" />}
+          {printers.map((printer, idx) => {
+            const isSelected = printerTab === 'siparis' ? selectedPrinter === printer.name : selectedReportPrinter === printer.name;
+            const isSaved = printerTab === 'siparis' ? savedPrinter === printer.name : savedReportPrinter === printer.name;
+            return (
+              <div
+                key={idx}
+                className={`printer-item ${isSelected ? 'selected' : ''}`}
+                onClick={() => printerTab === 'siparis' ? setSelectedPrinter(printer.name) : setSelectedReportPrinter(printer.name)}
+              >
+                <div className="printer-radio">
+                  <div className={`radio-outer ${isSelected ? 'checked' : ''}`}>
+                    {isSelected && <div className="radio-inner" />}
+                  </div>
+                </div>
+                <div className="printer-icon-box">
+                  <Printer size={24} />
+                </div>
+                <div className="printer-info">
+                  <div className="printer-name">
+                    {printer.displayName}
+                    {printer.isDefault && <span className="printer-default-badge">Varsayılan</span>}
+                    {isSaved && <span className="printer-active-badge">Kullanımda</span>}
+                  </div>
+                  <div className="printer-details">
+                    <span className={`printer-status ${getPrinterStatusClass(printer.status)}`}>
+                      {getPrinterStatusText(printer.status)}
+                    </span>
+                    {printer.description && (
+                      <span className="printer-description">{printer.description}</span>
+                    )}
+                  </div>
                 </div>
               </div>
-              <div className="printer-icon-box">
-                <Printer size={24} />
-              </div>
-              <div className="printer-info">
-                <div className="printer-name">
-                  {printer.displayName}
-                  {printer.isDefault && <span className="printer-default-badge">Varsayılan</span>}
-                  {savedPrinter === printer.name && <span className="printer-active-badge">Kullanımda</span>}
-                </div>
-                <div className="printer-details">
-                  <span className={`printer-status ${getPrinterStatusClass(printer.status)}`}>
-                    {getPrinterStatusText(printer.status)}
-                  </span>
-                  {printer.description && (
-                    <span className="printer-description">{printer.description}</span>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="printer-actions">
@@ -494,14 +573,14 @@ const Settings = () => {
             <button 
               className="printer-test-btn"
               onClick={handleTestPrint}
-              disabled={!selectedPrinter || loadingTestPrint}
+              disabled={(printerTab === 'siparis' ? !selectedPrinter : !selectedReportPrinter) || loadingTestPrint}
             >
               {loadingTestPrint ? <Loader2 size={16} className="spinner" /> : 'Sınama Sayfası Yazdır'}
             </button>
             <button 
               className="printer-save-btn"
               onClick={handleSavePrinter}
-              disabled={!selectedPrinter || selectedPrinter === savedPrinter}
+              disabled={printerTab === 'siparis' ? (!selectedPrinter || selectedPrinter === savedPrinter) : (!selectedReportPrinter || selectedReportPrinter === savedReportPrinter)}
             >
               Kaydet
             </button>
@@ -523,7 +602,75 @@ const Settings = () => {
     );
 
     switch (activeTab) {
-      case 'raporlama': return defaultPlaceholder('Raporlama');
+      case 'raporlama': return (
+        <div className="printer-section">
+          <h3>Raporlama Bölümü</h3>
+          <p className="printer-section-desc">Belirlediğiniz tarih aralığı ve telefon hatlarına göre geçmiş çağrı listesini A4 formatında "Rapor Yazıcınız" üzerinden yazdırın.</p>
+
+          <div style={{ background: '#f8fafc', padding: '20px', borderRadius: '12px', border: '1px solid #e2e8f0', marginTop: '16px' }}>
+            <h4 style={{ margin: '0 0 16px', fontSize: '15px', color: '#0f172a' }}>Tarih Aralığı Seçimi</h4>
+            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: '200px' }}>
+                <label style={{ fontSize: '13px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '8px' }}>Başlangıç Tarihi</label>
+                <input 
+                  type="date" 
+                  value={reportStartDate}
+                  onChange={(e) => setReportStartDate(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box', fontFamily: 'inherit' }}
+                  onFocus={e => e.target.style.borderColor = '#38bdf8'}
+                  onBlur={e => e.target.style.borderColor = '#e2e8f0'}
+                />
+              </div>
+              <div style={{ flex: 1, minWidth: '200px' }}>
+                <label style={{ fontSize: '13px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '8px' }}>Bitiş Tarihi</label>
+                <input 
+                  type="date"
+                  value={reportEndDate}
+                  onChange={(e) => setReportEndDate(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box', fontFamily: 'inherit' }}
+                  onFocus={e => e.target.style.borderColor = '#38bdf8'}
+                  onBlur={e => e.target.style.borderColor = '#e2e8f0'}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div style={{ background: '#f8fafc', padding: '20px', borderRadius: '12px', border: '1px solid #e2e8f0', marginTop: '20px' }}>
+            <h4 style={{ margin: '0 0 16px', fontSize: '15px', color: '#0f172a' }}>Hat Seçimi</h4>
+            <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+              {[1, 2, 3].map(id => (
+                <label key={id} style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#334155' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={reportLines[id]}
+                    onChange={(e) => setReportLines(prev => ({ ...prev, [id]: e.target.checked }))}
+                    style={{ width: '18px', height: '18px', accentColor: '#38bdf8', cursor: 'pointer' }}
+                  />
+                  Hat {id}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="printer-actions" style={{ marginTop: '28px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '16px' }}>
+            {reportSuccess && (
+              <div className="printer-save-success" style={{ margin: 0 }}>
+                <CheckCircle size={18} color="#16a34a" />
+                <span style={{ color: '#16a34a', fontWeight: '600' }}>Rapor başarıyla yazdırıldı!</span>
+              </div>
+            )}
+            <button 
+              className="printer-save-btn" 
+              onClick={handlePrintReport}
+              disabled={printingReport || Object.values(reportLines).every(v => !v)}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#0ea5e9', cursor: (printingReport || Object.values(reportLines).every(v => !v)) ? 'not-allowed' : 'pointer' }}
+            >
+              {printingReport ? <Loader2 size={16} className="spinner" /> : <FileText size={16} />}
+              Raporu Yazdır
+            </button>
+          </div>
+        </div>
+      );
       case 'hat': return (
         <div className="printer-section">
           <h3>{t('hatSettingsTitle')}</h3>
@@ -705,8 +852,45 @@ const Settings = () => {
       case 'yazici': return (
         <div className="printer-section">
           <h3>{t('printerTitle')}</h3>
+
+          {/* Yazıcı Sekmeleri */}
+          <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', marginBottom: '20px', marginTop: '10px' }}>
+            <div 
+              onClick={() => setPrinterTab('siparis')}
+              style={{
+                padding: '10px 20px', 
+                cursor: 'pointer',
+                fontWeight: '600',
+                color: printerTab === 'siparis' ? '#0ea5e9' : '#64748b',
+                borderBottom: printerTab === 'siparis' ? '2px solid #0ea5e9' : '2px solid transparent',
+                transition: 'all 0.2s',
+                userSelect: 'none'
+              }}
+            >
+              Sipariş Yazıcısı
+            </div>
+            <div 
+              onClick={() => setPrinterTab('rapor')}
+              style={{
+                padding: '10px 20px', 
+                cursor: 'pointer',
+                fontWeight: '600',
+                color: printerTab === 'rapor' ? '#0ea5e9' : '#64748b',
+                borderBottom: printerTab === 'rapor' ? '2px solid #0ea5e9' : '2px solid transparent',
+                transition: 'all 0.2s',
+                userSelect: 'none'
+              }}
+            >
+              Rapor Yazıcısı
+            </div>
+          </div>
+
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-            <p className="printer-section-desc" style={{ margin: 0, flex: 1 }}>{t('printerDesc')}</p>
+            <p className="printer-section-desc" style={{ margin: 0, flex: 1 }}>
+              {printerTab === 'siparis' 
+                ? 'Gelen çağrılarda otomatik ve manuel fiş yazdırılırken kullanılacak varsayılan termal sipariş yazıcısıdır.' 
+                : 'Program içerisinden büyük çıktı (A4 vb.) veya raporlar alınırken kullanılacak yazıcıdır.'}
+            </p>
             <button
               className="printer-refresh-btn"
               onClick={loadPrinters}

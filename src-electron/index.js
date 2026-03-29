@@ -1222,15 +1222,38 @@ app.whenReady().then(() => {
     }
   });
 
-  // Seçilen yazıcıyı kaydet
+  // Seçilen yazıcıyı kaydet (Sipariş / Varsayılan)
   ipcMain.handle('save-printer-selection', (event, printerName) => {
     try {
       const fs = require('fs');
-      fs.writeFileSync(printerConfigPath, JSON.stringify({ selectedPrinter: printerName }, null, 2), 'utf-8');
-      console.log('Yazıcı seçimi kaydedildi:', printerName);
+      let data = {};
+      if (fs.existsSync(printerConfigPath)) {
+        try { data = JSON.parse(fs.readFileSync(printerConfigPath, 'utf-8')); } catch(e){}
+      }
+      data.selectedPrinter = printerName;
+      fs.writeFileSync(printerConfigPath, JSON.stringify(data, null, 2), 'utf-8');
+      console.log('Sipariş Yazıcısı seçimi kaydedildi:', printerName);
       return { success: true };
     } catch (error) {
-      console.error('Yazıcı seçimi kaydedilemedi:', error);
+      console.error('Sipariş Yazıcısı seçimi kaydedilemedi:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Rapor Yazıcısını Kaydet
+  ipcMain.handle('save-report-printer-selection', (event, printerName) => {
+    try {
+      const fs = require('fs');
+      let data = {};
+      if (fs.existsSync(printerConfigPath)) {
+        try { data = JSON.parse(fs.readFileSync(printerConfigPath, 'utf-8')); } catch(e){}
+      }
+      data.reportPrinter = printerName;
+      fs.writeFileSync(printerConfigPath, JSON.stringify(data, null, 2), 'utf-8');
+      console.log('Rapor Yazıcısı seçimi kaydedildi:', printerName);
+      return { success: true };
+    } catch (error) {
+      console.error('Rapor Yazıcısı seçimi kaydedilemedi:', error);
       return { success: false, error: error.message };
     }
   });
@@ -1248,109 +1271,119 @@ app.whenReady().then(() => {
     return null;
   });
 
-  //   // Yazıcı Gerçek Zamanlı Durum Kontrolü
-  // Strateji (öncelik sırasıyla):
-  //   1. Electron getPrintersAsync() — USB/usbprint.inf için en güvenilir
-  //   2. TCP port testi — ağ yazıcıları için
-  //   3. PowerShell Get-Printer — son çare
+  // Kaydedilmiş rapor yazıcısı seçimini yükle
+  ipcMain.handle('get-report-printer-selection', () => {
+    try {
+      if (fs.existsSync(printerConfigPath)) {
+        const data = JSON.parse(fs.readFileSync(printerConfigPath, 'utf-8'));
+        return data.reportPrinter || null;
+      }
+    } catch (error) {
+      console.error('Rapor Yazıcısı seçimi yüklenemedi:', error);
+    }
+    return null;
+  });
+
+  // ====== YAZICI GERÇEK ZAMANLI DURUM KONTROLÜ ======
+  // MİMARİ KARAR: USB ve Ağ yazıcıları farklı karakteristikte olduğu için
+  // yapısal olarak iki bağımsız rotaya (route) ayrılmış kontroller kullanılır.
   ipcMain.handle('get-printer-status', async (event, printerName) => {
     if (!printerName) return 'not_selected';
 
     console.log(`[Printer] Durum kontrolü: "${printerName}"`);
-
-    // ══ ADIM 1: Electron/Chromium getPrintersAsync() — BİRİNCİL ══
-    // USB (usbprint.inf dahil), paylaşımlı ve ağ yazıcıları için çalışır.
-    try {
-      const sysPrinters = mainWindow ? await mainWindow.webContents.getPrintersAsync() : [];
-      console.log(`[Printer] Sistemde ${sysPrinters.length} yazıcı bulundu:`, sysPrinters.map(p => p.name));
-
-      // Tam isim eşleşmesi
-      let match = sysPrinters.find(p =>
-        p.name === printerName || p.displayName === printerName
-      );
-
-      // Tam eşleşme yoksa — büyük/küçük harf ve boşluk farkını görmezden gel
-      if (!match) {
-        const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-        match = sysPrinters.find(p =>
-          norm(p.name) === norm(printerName) || norm(p.displayName) === norm(printerName)
-        );
-      }
-
-      // Kısmi eşleşme — yazıcı adının bir kısmı uyuşuyorsa
-      if (!match) {
-        const normPN = (printerName || '').toLowerCase();
-        match = sysPrinters.find(p =>
-          (p.name || '').toLowerCase().includes(normPN) ||
-          normPN.includes((p.name || '').toLowerCase())
-        );
-      }
-
-      if (match) {
-        // USB termal yazıcılar (GP-U80160 vb.) çalışıyor olsa bile status != 0 döndürebilir.
-        // Sadece kesin hata (status=2) durumunda not_ready döndür; listede var ise ready say.
-        console.log(`[Printer] Electron eşleşme bulundu: "${match.name}" status=${match.status}`);
-        return match.status === 2 ? 'not_ready' : 'ready';
-      }
-
-      console.log(`[Printer] Electron listesinde yazıcı bulunamadı, TCP/PS fallback deneniyor...`);
-    } catch (electronErr) {
-      console.log('[Printer] Electron getPrintersAsync hatası:', electronErr.message);
-    }
-
-    // ══ ADIM 2: TCP Port testi (ağ yazıcıları için) ══
     const { exec } = child_process;
-    const net = require('net');
-    const escaped = printerName.replace(/'/g, "''").replace(/"/g, '');
+    const escaped = printerName.replace(/'/g, "''");
 
-    const tryTcp = (ip, port, timeoutMs) => new Promise((res) => {
-      const sock = new net.Socket();
-      let done = false;
-      const finish = (ok) => { if (!done) { done = true; try { sock.destroy(); } catch (_) { } res(ok); } };
-      sock.setTimeout(timeoutMs);
-      sock.on('connect', () => finish(true));
-      sock.on('error', () => finish(false));
-      sock.on('timeout', () => finish(false));
-      try { sock.connect(port, ip); } catch (_) { finish(false); }
-    });
-
+    // ══ ADIM 1: YAZICI TİPİ TESPİTİ (Ağ Yazıcısı mı Yoksa USB/Yerel mi?) ══
+    // Sadece ağ (TCP/IP veya WSD) yazıcılarının PrinterHostAddress adresi olur.
+    // USB yazıcılarda bu değer çoğunlukla boştur (örn: PortName = "USB001").
+    const getIpCmd = `powershell -NoProfile -NonInteractive -Command "(Get-PrinterPort -Name (Get-Printer -Name '${escaped}' -ErrorAction Stop).PortName -ErrorAction Stop).PrinterHostAddress"`;
+    
     const ip = await new Promise((res) => {
-      const cmd = `powershell -NoProfile -NonInteractive -Command "(Get-PrinterPort -Name (Get-Printer -Name '${escaped}' -ErrorAction Stop).PortName -ErrorAction Stop).PrinterHostAddress"`;
-      exec(cmd, { timeout: 6000 }, (err, stdout) => {
+      exec(getIpCmd, { timeout: 6000 }, (err, stdout) => {
         const val = (stdout || '').trim();
         res(err || !val ? '' : val);
       });
     });
 
+    // ══ ADIM 2A: AĞ YAZICISI ROTASI (SADECE TCP PORT MANTALI KONTROL) ══
+    // WMI ve Windows Yazdırma Biriktiricisi ağ yazıcılarının çevrimdışı olduğunu hemen yansıtmaz,
+    // "Hazır" (Status:3) şeklinde yalan söyleyebilir. Bu nedenle IP testi EN DOĞRU yoldur.
     if (ip) {
-      console.log(`[Printer] Ağ yazıcısı IP: ${ip} — TCP test ediliyor...`);
+      console.log(`[Printer] AĞ YAZICISI TESPİT EDİLDİ - IP: ${ip} — WMI ve Electron atlanıyor, direkt TCP donanım testi yapılıyor...`);
+      const net = require('net');
+      
+      const tryTcp = (targetIp, port, timeoutMs) => new Promise((res) => {
+        const sock = new net.Socket();
+        let done = false;
+        const finish = (ok) => { if (!done) { done = true; try { sock.destroy(); } catch (_) { } res(ok); } };
+        sock.setTimeout(timeoutMs);
+        sock.on('connect', () => finish(true));
+        sock.on('error', () => finish(false));
+        sock.on('timeout', () => finish(false));
+        try { sock.connect(port, targetIp); } catch (_) { finish(false); }
+      });
+
+      // Termal ağ yazıcılarında genel komut portları (9100, 631, 80) test edilir.
       if (await tryTcp(ip, 9100, 2000)) return 'ready';
       if (await tryTcp(ip, 631, 2000)) return 'ready';
       if (await tryTcp(ip, 80, 2000)) return 'ready';
+
+      console.log(`[Printer] Ağ yazıcısına belirtilen IP üzerinden hiçbir porta donanımsal ping atılamadı → not_ready`);
+      return 'not_ready';
     }
 
-    // ══ ADIM 3: PowerShell Get-Printer — Son çare ══
-    const psResult = await new Promise((res) => {
-      const cmd = `powershell -NoProfile -NonInteractive -Command "$p=Get-Printer -Name '${escaped}' -ErrorAction Stop; Write-Output \\"$($p.WorkOffline)\\"; Write-Output \\"$($p.PrinterStatus)\\""`;
+    // ══ ADIM 2B: USB / YEREL YAZICI ROTASI (SADECE WMI VE YEDEK ELECTRON) ══
+    // USB yazıcılarda IP yoktur ve fiziksel bağlantı değiştiğinde WMI (Win32_Printer)
+    // çok hızlı bir şekilde hata durumunu donanım seviyesinde raporlamaktadır.
+    console.log(`[Printer] USB / YEREL YAZICI TESPİT EDİLDİ — Detaylı WMI donanım kontrolü yapılıyor...`);
+    
+    const wmiResult = await new Promise((res) => {
+      const cmd = `powershell -NoProfile -NonInteractive -Command "$p = Get-WmiObject Win32_Printer | Where-Object { $_.Name -eq '${escaped}' }; if ($p) { Write-Output ($p.PrinterStatus.ToString() + '|' + $p.WorkOffline.ToString() + '|' + $p.DetectedErrorState.ToString()) } else { Write-Output 'not_found' }"`;
       exec(cmd, { timeout: 8000 }, (err, out) => {
         if (err) { res(null); return; }
-        const lines = (out || '').trim().split(/\r?\n/).map(l => l.trim());
-        const workOffline = (lines[0] || '').toLowerCase() === 'true';
-        const spoolerStatus = (lines[1] || '').toLowerCase();
-        console.log(`[Printer] PS fallback → WorkOffline:${workOffline} Status:${spoolerStatus}`);
-        res({ workOffline, spoolerStatus });
+        res((out || '').trim());
       });
     });
 
-    if (psResult) {
-      if (psResult.workOffline) return 'not_ready';
-      const bad = ['offline', 'error'];
-      if (bad.some(b => psResult.spoolerStatus.includes(b))) return 'not_ready';
+    console.log(`[Printer] USB WMI Sonucu: "${wmiResult}"`);
+
+    if (wmiResult && wmiResult !== 'not_found') {
+      const parts = wmiResult.split('|');
+      const printerStatus = parseInt(parts[0]) || 0;
+      const workOffline = (parts[1] || '').toLowerCase() === 'true';
+      const detectedErrorState = parseInt(parts[2]) || 0;
+
+      console.log(`[Printer] USB WMI Detayları → PrinterStatus:${printerStatus} WorkOffline:${workOffline} DetectedErrorState:${detectedErrorState}`);
+
+      if (workOffline) return 'not_ready';
+      if (printerStatus === 7) return 'not_ready';       // Offline
+      if (printerStatus === 6) return 'not_ready';       // StoppedPrinting
+      if (detectedErrorState === 9) return 'not_ready';  // Offline hatası
+      if (detectedErrorState >= 4) return 'not_ready';   // Kağıt yok, kapı açık, sıkışma vb.
+      
       return 'ready';
     }
 
-    // Hiçbir kontrol sonuç vermediyse: yazıcı sistem listesinde yok → seçili değil
-    console.log('[Printer] Yazıcı hiçbir yöntemle bulunamadı.');
+    // Eğer WMI servisi kullanılamazsa, son güvenlik ağı olarak Electron kontrolü
+    console.log(`[Printer] USB WMI yanıt vermedi, Electron Fallback yapılıyor...`);
+    try {
+      const sysPrinters = mainWindow ? await mainWindow.webContents.getPrintersAsync() : [];
+      const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const normPN = norm(printerName);
+      const match = sysPrinters.find(p =>
+        norm(p.name) === normPN || norm(p.displayName) === normPN ||
+        norm(p.name).includes(normPN) || normPN.includes(norm(p.name))
+      );
+      if (match) {
+        console.log(`[Printer] USB Electron Fallback eşleşmesi: "${match.name}" status=${match.status}`);
+        return match.status === 2 ? 'not_ready' : 'ready';
+      }
+    } catch (electronErr) {
+      console.log('[Printer] USB Electron getPrintersAsync hatası:', electronErr.message);
+    }
+
+    console.log('[Printer] USB / Yerel Yazıcı hiçbir yöntemle sistemde bulunamadı → not_ready.');
     return 'not_ready';
   });
 
@@ -1966,6 +1999,113 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
     }
   });
 
+  // ====== Rapor Yazdırma (A4 PDF/HTML Tablosu) ======
+  ipcMain.handle('print-a4-report', async (event, callsData, printerName) => {
+    try {
+      if (!printerName) {
+        return { success: false, error: 'Rapor yazıcısı seçilmemiş. Lütfen Ayarlar > Yazıcılar menüsünden Rapor Yazıcınızı seçin.' };
+      }
+
+      let tableRows = '';
+      callsData.forEach((call, index) => {
+        const name = call.name && call.name.trim() !== '' ? call.name : 'Kayıtlı değil';
+        const phone = call.phone || '';
+        const addr = call.address && call.address.trim() !== '' ? call.address : 'Kayıtlı değil';
+        const lineStr = call.lineLabel ? `Hat ${call.lineLabel}` : '-';
+        tableRows += `
+          <tr>
+            <td style="text-align: center;">${index + 1}</td>
+            <td>${name}</td>
+            <td>${phone}</td>
+            <td>${addr}</td>
+            <td style="text-align: center;">${lineStr}</td>
+          </tr>
+        `;
+      });
+
+      const todayStr = new Date().toLocaleDateString('tr-TR');
+      const timeStr = new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html lang="tr">
+        <head>
+          <meta charset="UTF-8">
+          <style>
+            @page { size: A4 portrait; margin: 15mm 15mm 25mm 15mm; }
+            body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; padding: 0; margin: 0; color: #111; }
+            .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+            .header h1 { margin: 0; font-size: 20px; color: #000; }
+            .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+            th, td { border: 1px solid #ccc; padding: 8px 6px; text-align: left; vertical-align: middle; word-wrap: break-word; }
+            th { background-color: #f1f5f9; font-weight: bold; font-size: 12px; color: #334155; }
+            tr:nth-child(even) { background-color: #f8fafc; }
+            td { font-size: 11px; color: #1e293b; }
+            .footer-container {
+              position: fixed; bottom: 0; left: 0; width: 100%;
+              text-align: center; font-size: 11px; font-weight: 700;
+              padding: 10px 0; border-top: 1px solid #94a3b8;
+              background-color: white; color: #334155;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Gaziburma Mustafa - İletişim Raporu</h1>
+            <p>Oluşturulma Tarihi: ${todayStr} ${timeStr} &nbsp;&nbsp;|&nbsp;&nbsp; Toplam Kayıt: <b>${callsData.length}</b></p>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 5%; text-align: center;">Sıra</th>
+                <th style="width: 25%;">Müşteri Adı / Unvanı</th>
+                <th style="width: 15%;">Telefon</th>
+                <th style="width: 45%;">Adres Bilgisi</th>
+                <th style="width: 10%; text-align: center;">Hat</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+          <div class="footer-container">
+            Hat 1: (216) 354 11 82 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 2: (216) 483 27 27 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 3: (216) 354 27 27
+          </div>
+        </body>
+        </html>
+      `;
+
+      const printWin = new BrowserWindow({
+        show: false,
+        webPreferences: { nodeIntegration: false, contextIsolation: true }
+      });
+
+      await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent));
+
+      return new Promise((resolve) => {
+        printWin.webContents.print({
+          silent: true,
+          deviceName: printerName,
+          printBackground: true,
+          color: true,
+          margins: { marginType: 'printableArea' }
+        }, (success, failureReason) => {
+          printWin.destroy();
+          if (success) {
+            console.log('[A4 Print] Yazdırma başarılı.');
+            resolve({ success: true });
+          } else {
+            console.error('[A4 Print] Yazdırma hatası:', failureReason);
+            resolve({ success: false, error: failureReason });
+          }
+        });
+      });
+    } catch (error) {
+      console.error('[A4 Print] İstisna:', error);
+      return { success: false, error: error.message };
+    }
+  });
 
 });
 

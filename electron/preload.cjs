@@ -56,9 +56,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPrinters: () => ipcRenderer.invoke('get-printers'),
   savePrinterSelection: (printerName) => ipcRenderer.invoke('save-printer-selection', printerName),
   getPrinterSelection: () => ipcRenderer.invoke('get-printer-selection'),
+  saveReportPrinterSelection: (printerName) => ipcRenderer.invoke('save-report-printer-selection', printerName),
+  getReportPrinterSelection: () => ipcRenderer.invoke('get-report-printer-selection'),
   getPrinterStatus: (printerName) => ipcRenderer.invoke('get-printer-status', printerName),
   printCustomerInfo: (data) => ipcRenderer.invoke('print-customer-info', data),
   printTestPage: (printerName) => ipcRenderer.invoke('print-test-page', printerName),
+  printA4Report: (callsData, printerName) => ipcRenderer.invoke('print-a4-report', callsData, printerName),
 
   // Modal Görsel Uyarı — arka plan tıklandığında kırmızı gölge efekti
   onFlashAlert: (callback) => {

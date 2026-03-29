@@ -33,6 +33,7 @@ import {
 import './App.css';
 import LockScreen from './LockScreen.jsx';
 import { LanguageProvider, useLanguage } from './LanguageContext.jsx';
+import CustomCalendar from './CustomCalendar.jsx';
 
 // Varsayılan Müşteri Verisi (Boş Durum İçin)
 const emptyLineData = {
@@ -173,7 +174,7 @@ function AppInner() {
   const [theme, setTheme] = useState('light'); // Tema (light / dark)
   const [isLocked, setIsLocked] = useState(false);      // Kilit ekranı görünsün mü?
   const [secretQuestion, setSecretQuestion] = useState(''); // Gizli soru metni
-  const dateInputRef = React.useRef(null); // Gizli input referansı
+  const [showCustomCalendar, setShowCustomCalendar] = useState(false);
 
   // Anlık durumlara effect içinden erişmek için referanslar (Closure düzeltmesi)
   const linesRef = React.useRef(lines);
@@ -746,6 +747,11 @@ function AppInner() {
 
     return phone; // Format uymuyorsa olduğu gibi bırak
   };
+
+  // Takvimde mavi çizgi/nokta gösterilecek tarihleri ayıkla (Örn: "29.03.2026")
+  const callHistoryDates = useMemo(() => {
+    return new Set(callHistory.map(call => call.date));
+  }, [callHistory]);
 
   // Sadece seçili günün (veya bugünün) toplam çağrı sayısını hesaplama
   const currentDayTotalCallsCount = useMemo(() => {
@@ -1566,21 +1572,23 @@ function AppInner() {
                   {currentDayTotalCallsCount} {t('callCount')}
                 </span>
                 
-                {/* Takvim Simgesi ve Gizli Input */}
+                {/* Takvim Simgesi ve Özel Takvim Pop-Up */}
                 <div style={{ position: 'relative' }}>
                   <CalendarDays 
                     size={20} 
-                    color={selectedDate && !isTodaySelected() ? "#3b82f6" : "#94a3b8"} 
+                    color={selectedDate && (selectedDate !== getLocalTodayStr()) ? "#3b82f6" : "#94a3b8"} 
                     style={{ cursor: 'pointer' }}
-                    onClick={handleDateClick}
+                    onClick={() => setShowCustomCalendar(!showCustomCalendar)}
                     title={t('filterByDate')}
                   />
-                  <input
-                    type="date"
-                    ref={dateInputRef}
-                    style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                  />
+                  {showCustomCalendar && (
+                    <CustomCalendar 
+                      selectedDate={selectedDate}
+                      onSelectDate={(date) => setSelectedDate(date)}
+                      callHistoryDates={callHistoryDates}
+                      onClose={() => setShowCustomCalendar(false)}
+                    />
+                  )}
                 </div>
               </div>
             </div>
