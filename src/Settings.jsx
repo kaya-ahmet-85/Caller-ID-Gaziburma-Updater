@@ -148,7 +148,12 @@ const Settings = () => {
 
   const handlePrintReport = async () => {
     if (!window.electronAPI) return;
-    if (!savedReportPrinter) {
+    
+    const currentReportPrinter = window.electronAPI.getReportPrinterSelection 
+      ? await window.electronAPI.getReportPrinterSelection() 
+      : savedReportPrinter;
+
+    if (!currentReportPrinter) {
       alert("Lütfen önce 'Yazıcı(lar)' sekmesinden bir 'Rapor Yazıcısı' seçip kaydedin.");
       return;
     }
@@ -169,14 +174,27 @@ const Settings = () => {
       const end = new Date(reportEndDate); end.setHours(23,59,59,999);
 
       const filteredCalls = callHistory.filter((call) => {
-        const lineStr = call.lineLabel ? call.lineLabel.toString() : '';
-        if (lineStr && !reportLines[lineStr]) return false;
+        const lineMatch = call.line ? call.line.match(/\d+/) : null;
+        const lineId = lineMatch ? lineMatch[0] : '';
+        if (lineId && !reportLines[lineId]) return false;
 
         const callDate = parseTrDate(call.date);
         if (callDate) {
           if (callDate < start || callDate > end) return false;
         }
         return true;
+      }).sort((a, b) => {
+        const da = parseTrDate(a.date);
+        const db = parseTrDate(b.date);
+        if (!da || !db) return 0;
+        
+        if (da.getTime() !== db.getTime()) {
+          return da.getTime() - db.getTime();
+        }
+        
+        const ta = a.time || '00:00';
+        const tb = b.time || '00:00';
+        return ta.localeCompare(tb);
       });
 
       if (filteredCalls.length === 0) {
@@ -185,7 +203,7 @@ const Settings = () => {
         return;
       }
 
-      const result = await window.electronAPI.printA4Report(filteredCalls, savedReportPrinter);
+      const result = await window.electronAPI.printA4Report(filteredCalls, currentReportPrinter);
       if (result && result.success) {
         setReportSuccess(true);
         setTimeout(() => setReportSuccess(false), 3000);

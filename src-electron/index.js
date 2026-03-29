@@ -2006,19 +2006,42 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
         return { success: false, error: 'Rapor yazıcısı seçilmemiş. Lütfen Ayarlar > Yazıcılar menüsünden Rapor Yazıcınızı seçin.' };
       }
 
+      const fmtPhoneA4 = (raw) => {
+        const d = (raw || '').toString().replace(/\D/g, '');
+        let num = d;
+        if (num.length === 11 && num[0] === '0') num = num.slice(1);
+        if (num.length === 10) {
+          return '(' + num.slice(0, 3) + ') ' + num.slice(3, 6) + ' ' + num.slice(6, 8) + ' ' + num.slice(8);
+        }
+        return raw || '';
+      };
+
       let tableRows = '';
       callsData.forEach((call, index) => {
         const name = call.name && call.name.trim() !== '' ? call.name : 'Kayıtlı değil';
-        const phone = call.phone || '';
+        const phone = fmtPhoneA4(call.phone);
         const addr = call.address && call.address.trim() !== '' ? call.address : 'Kayıtlı değil';
-        const lineStr = call.lineLabel ? `Hat ${call.lineLabel}` : '-';
+        
+        const lineMatch = call.line ? call.line.match(/\d+/) : null;
+        const lineId = lineMatch ? lineMatch[0] : '';
+        const lineStr = lineId ? `Hat ${lineId}` : '-';
+
+        let bgColor = '';
+        if (lineId === '1') bgColor = '#e0f2fe';
+        else if (lineId === '2') bgColor = '#dcfce3';
+        else if (lineId === '3') bgColor = '#ffedd5';
+
+        const callDate = call.date || '';
+        const callTime = call.time || '';
+
         tableRows += `
-          <tr>
+          <tr style="${bgColor ? 'background-color: ' + bgColor + ';' : ''}">
             <td style="text-align: center;">${index + 1}</td>
+            <td style="text-align: center; white-space: nowrap;">${callDate}<br/><b>${callTime}</b></td>
             <td>${name}</td>
-            <td>${phone}</td>
+            <td style="white-space: nowrap;">${phone}</td>
             <td>${addr}</td>
-            <td style="text-align: center;">${lineStr}</td>
+            <td style="text-align: center; font-weight: bold;">${lineStr}</td>
           </tr>
         `;
       });
@@ -2040,13 +2063,14 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
             table { width: 100%; border-collapse: collapse; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
             th, td { border: 1px solid #ccc; padding: 8px 6px; text-align: left; vertical-align: middle; word-wrap: break-word; }
             th { background-color: #f1f5f9; font-weight: bold; font-size: 12px; color: #334155; }
-            tr:nth-child(even) { background-color: #f8fafc; }
+            tr { page-break-inside: avoid; break-inside: avoid; }
             td { font-size: 11px; color: #1e293b; }
-            .footer-container {
-              position: fixed; bottom: 0; left: 0; width: 100%;
+            tfoot { display: table-footer-group; }
+            .footer-cell {
+              border: none !important;
               text-align: center; font-size: 11px; font-weight: 700;
-              padding: 10px 0; border-top: 1px solid #94a3b8;
-              background-color: white; color: #334155;
+              padding-top: 15px !important; color: #334155;
+              background-color: white !important;
             }
           </style>
         </head>
@@ -2059,19 +2083,24 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
             <thead>
               <tr>
                 <th style="width: 5%; text-align: center;">Sıra</th>
-                <th style="width: 25%;">Müşteri Adı / Unvanı</th>
+                <th style="width: 10%; text-align: center;">Tarih/Saat</th>
+                <th style="width: 20%;">Müşteri Adı / Unvanı</th>
                 <th style="width: 15%;">Telefon</th>
-                <th style="width: 45%;">Adres Bilgisi</th>
+                <th style="width: 40%;">Adres Bilgisi</th>
                 <th style="width: 10%; text-align: center;">Hat</th>
               </tr>
             </thead>
             <tbody>
               ${tableRows}
             </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="6" class="footer-cell">
+                  Hat 1: (216) 354 11 82 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 2: (216) 483 27 27 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 3: (216) 354 27 27
+                </td>
+              </tr>
+            </tfoot>
           </table>
-          <div class="footer-container">
-            Hat 1: (216) 354 11 82 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 2: (216) 483 27 27 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 3: (216) 354 27 27
-          </div>
         </body>
         </html>
       `;
