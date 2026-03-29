@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+﻿const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -1492,12 +1492,49 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
 
         // minLines: en az bu kadar satir basilir (bos satir ile doldurulur)
         // maxLines: fazlasi kesilir
-        const paddedBoldValueRow = (label, value, minLines, maxLines) => {
+        // wordWrap=true ise kelime ortasindan bolmez (adres icin kullanilir)
+        const paddedBoldValueRow = (label, value, minLines, maxLines, wordWrap = false) => {
           const maxV = VAL - 1;
           const valStr = (value || '').toString();
           let chunks = [];
           if (valStr.length === 0) {
             chunks = [''];
+          } else if (wordWrap) {
+            // Kelime bazli satir bölme: kelime ortasindan kesmez
+            const words = valStr.split(' ');
+            let currentLine = '';
+            for (const word of words) {
+              if (word.length === 0) continue;
+              if (currentLine.length === 0) {
+                // Tek kelime maxV'den uzunsa zorla böl
+                if (word.length > maxV) {
+                  let remaining = word;
+                  while (remaining.length > maxV) {
+                    chunks.push(remaining.substring(0, maxV));
+                    remaining = remaining.substring(maxV);
+                  }
+                  currentLine = remaining;
+                } else {
+                  currentLine = word;
+                }
+              } else if (currentLine.length + 1 + word.length <= maxV) {
+                currentLine += ' ' + word;
+              } else {
+                chunks.push(currentLine);
+                if (word.length > maxV) {
+                  let remaining = word;
+                  while (remaining.length > maxV) {
+                    chunks.push(remaining.substring(0, maxV));
+                    remaining = remaining.substring(maxV);
+                  }
+                  currentLine = remaining;
+                } else {
+                  currentLine = word;
+                }
+              }
+            }
+            if (currentLine.length > 0) chunks.push(currentLine);
+            if (chunks.length === 0) chunks = [''];
           } else {
             for (let i = 0; i < valStr.length; i += maxV)
               chunks.push(valStr.substring(i, i + maxV));
@@ -1655,8 +1692,8 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
         paddedBoldValueRow('Alici:', cleanName, 1, 4);
         pushHLineBytes(true, true, false, false);
 
-        // === ADRES: min 2 satir, max 10 satir ===
-        paddedBoldValueRow('Adres:', cleanAddress, 2, 10);
+        // === ADRES: min 2 satir, max 10 satir — kelime bazli satir bölme ===
+        paddedBoldValueRow('Adres:', cleanAddress, 2, 10, true);
 
         // Müşteri adresinden hemen sonra her zaman 3 satır boşluk bırak
         paddedBoldValueRow('', '', 3, 3);
@@ -1691,7 +1728,7 @@ if ([RawPrinterCore]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero))
       };
 
 
-      const receiptBuf = Buffer.concat([buildReceipt(), buildReceipt()]); // 2 kopya
+      const receiptBuf = buildReceipt(); // 1 kopya (geçici — eski: Buffer.concat([buildReceipt(), buildReceipt()]))
       const ts = Date.now();
       const binPath = path.join(os.tmpdir(), `siparis_escpos_${ts}.bin`);
       fs.writeFileSync(binPath, receiptBuf);
