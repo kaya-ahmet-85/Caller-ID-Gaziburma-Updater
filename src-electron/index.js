@@ -979,10 +979,17 @@ app.whenReady().then(() => {
 
       sendProgress(100);
 
-      // Adım 4: Installer'ı başlat ve uygulamayı kapat
+      // Adım 4: Installer'ı bağımsız process olarak başlat, sonra uygulamayı kapat.
+      // shell.openPath() UAC gerektiren NSIS kurucularında güvenilir değildir;
+      // spawn + detached:true ile Electron'dan tamamen ayrışmış bir process başlatıyoruz.
       console.log('[Update] İndirme tamamlandı, installer başlatılıyor:', destPath);
-      await shell.openPath(destPath);
-      setTimeout(() => app.quit(), 1500);
+      const installer = child_process.spawn(destPath, [], {
+        detached: true,
+        stdio: 'ignore',
+        shell: false
+      });
+      installer.unref(); // Electron, installer process'ini beklemesin
+      setTimeout(() => app.quit(), 800);
 
       return { success: true };
     } catch (err) {
