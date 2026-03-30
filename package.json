@@ -2,7 +2,7 @@
   "name": "caller-id-gaziburma",
   "productName": "Caller ID Gaziburma",
   "private": true,
-  "version": "1.3.3",
+  "version": "1.3.4",
   "type": "module",
   "main": "src-electron/index.js",
   "scripts": {
