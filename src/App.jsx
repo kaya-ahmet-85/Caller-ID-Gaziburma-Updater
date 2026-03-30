@@ -35,6 +35,65 @@ import LockScreen from './LockScreen.jsx';
 import { LanguageProvider, useLanguage } from './LanguageContext.jsx';
 import CustomCalendar from './CustomCalendar.jsx';
 
+function MarqueeText({ children, className, style }) {
+  const containerRef = useRef(null);
+  const textRef = useRef(null);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+  const [overflowAmount, setOverflowAmount] = useState(0);
+
+  useEffect(() => {
+    const checkOverflow = () => {
+      if (containerRef.current && textRef.current) {
+        const overflow = textRef.current.scrollWidth - containerRef.current.clientWidth;
+        if (overflow > 0) {
+          setIsOverflowing(true);
+          setOverflowAmount(overflow + 8); 
+        } else {
+          setIsOverflowing(false);
+          setOverflowAmount(0);
+        }
+      }
+    };
+    checkOverflow();
+    const timeoutId = setTimeout(checkOverflow, 150);
+    window.addEventListener('resize', checkOverflow);
+    return () => {
+      window.removeEventListener('resize', checkOverflow);
+      clearTimeout(timeoutId);
+    };
+  }, [children]);
+
+  return (
+    <span 
+      ref={containerRef} 
+      className={className} 
+      style={{ 
+        ...style, 
+        overflow: 'hidden', 
+        display: 'flex',
+        alignItems: 'center',
+        flex: 1,
+        minWidth: 0,
+        position: 'relative'
+      }}
+    >
+      <span 
+        ref={textRef} 
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: style?.gap || '0',
+          whiteSpace: 'nowrap',
+          animation: isOverflowing ? 'marquee-dynamic 4s linear infinite alternate' : 'none',
+          '--overflow-amount': `-${overflowAmount}px`
+        }}
+      >
+        {children}
+      </span>
+    </span>
+  );
+}
+
 // Varsayılan Müşteri Verisi (Boş Durum İçin)
 const emptyLineData = {
   active: false,
@@ -1254,12 +1313,10 @@ function AppInner() {
                               <div className="detail-row" style={{ position: 'relative' }}>
                                 <div className="icon-wrapper blue"><User size={20} /></div>
                                 <div className="detail-content" style={{ position: 'relative', width: '100%', paddingRight: '12px' }}>
-                                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                  <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: 1, minWidth: 0 }}>
                                     <span className="detail-label">{t('customerName')}</span>
-                                    <span className="detail-value" style={{ 
+                                    <MarqueeText className="detail-value" style={{ 
                                       opacity: box4Selected ? 1 : 0.4,
-                                      display: 'flex',
-                                      alignItems: 'center',
                                       gap: '8px'
                                     }}>
                                       {box4Selected ? box4Selected.name : ''}
@@ -1273,7 +1330,7 @@ function AppInner() {
                                           ({box4Results.length})
                                         </span>
                                       )}
-                                    </span>
+                                    </MarqueeText>
                                   </div>
                                   
                                   {box4Results.length > 1 && (
@@ -1420,11 +1477,11 @@ function AppInner() {
                         <div className="detail-row" style={{ position: 'relative' }}>
                           <div className="icon-wrapper blue"><User size={20} /></div>
                           <div className="detail-content" style={{ position: 'relative', width: '100%', paddingRight: '12px' }}>
-                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: 1, minWidth: 0 }}>
                               <span className="detail-label">{t('customerName')}</span>
-                              <span className="detail-value" style={{ 
+                              <MarqueeText className="detail-value" style={{ 
                                 opacity: line.name === 'Veri Bekleniyor' ? 0.4 : 1,
-                                display: 'flex', alignItems: 'center', gap: '8px'
+                                gap: '8px'
                               }}>
                                 {line.name === 'Veri Bekleniyor' ? t('waitingData') : line.name}
                                 {line.results && line.results.length > 1 && (
@@ -1432,7 +1489,7 @@ function AppInner() {
                                      ({line.results.length})
                                    </span>
                                 )}
-                              </span>
+                              </MarqueeText>
                             </div>
 
                             {line.results && line.results.length > 1 && (

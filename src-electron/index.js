@@ -2000,11 +2000,13 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
   });
 
   // ====== Rapor Yazdırma (A4 PDF/HTML Tablosu) ======
-  ipcMain.handle('print-a4-report', async (event, callsData, printerName) => {
+  ipcMain.handle('print-a4-report', async (event, callsData, printerName, options = {}) => {
     try {
       if (!printerName) {
         return { success: false, error: 'Rapor yazıcısı seçilmemiş. Lütfen Ayarlar > Yazıcılar menüsünden Rapor Yazıcınızı seçin.' };
       }
+
+      const { reportType = 'cagri_listesi', customReportPhone = '', startDateStr = '', endDateStr = '' } = options;
 
       const fmtPhoneA4 = (raw) => {
         const d = (raw || '').toString().replace(/\D/g, '');
@@ -2016,94 +2018,485 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
         return raw || '';
       };
 
-      let tableRows = '';
-      callsData.forEach((call, index) => {
-        const name = call.name && call.name.trim() !== '' ? call.name : 'Kayıtlı değil';
-        const phone = fmtPhoneA4(call.phone);
-        const addr = call.address && call.address.trim() !== '' ? call.address : 'Kayıtlı değil';
-        
-        const lineMatch = call.line ? call.line.match(/\d+/) : null;
-        const lineId = lineMatch ? lineMatch[0] : '';
-        const lineStr = lineId ? `Hat ${lineId}` : '-';
-
-        let bgColor = '';
-        if (lineId === '1') bgColor = '#e0f2fe';
-        else if (lineId === '2') bgColor = '#dcfce3';
-        else if (lineId === '3') bgColor = '#ffedd5';
-
-        const callDate = call.date || '';
-        const callTime = call.time || '';
-
-        tableRows += `
-          <tr style="${bgColor ? 'background-color: ' + bgColor + ';' : ''}">
-            <td style="text-align: center;">${index + 1}</td>
-            <td style="text-align: center; white-space: nowrap;">${callDate}<br/><b>${callTime}</b></td>
-            <td>${name}</td>
-            <td style="white-space: nowrap;">${phone}</td>
-            <td>${addr}</td>
-            <td style="text-align: center; font-weight: bold;">${lineStr}</td>
-          </tr>
-        `;
-      });
-
       const todayStr = new Date().toLocaleDateString('tr-TR');
       const timeStr = new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
 
-      const htmlContent = `
-        <!DOCTYPE html>
-        <html lang="tr">
-        <head>
-          <meta charset="UTF-8">
-          <style>
-            @page { size: A4 portrait; margin: 15mm 15mm 25mm 15mm; }
-            body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; padding: 0; margin: 0; color: #111; }
-            .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
-            .header h1 { margin: 0; font-size: 20px; color: #000; }
-            .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
-            table { width: 100%; border-collapse: collapse; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-            th, td { border: 1px solid #ccc; padding: 8px 6px; text-align: left; vertical-align: middle; word-wrap: break-word; }
-            th { background-color: #f1f5f9; font-weight: bold; font-size: 12px; color: #334155; }
-            tr { page-break-inside: avoid; break-inside: avoid; }
-            td { font-size: 11px; color: #1e293b; }
-            tfoot { display: table-footer-group; }
-            .footer-cell {
-              border: none !important;
-              text-align: center; font-size: 11px; font-weight: 700;
-              padding-top: 15px !important; color: #334155;
-              background-color: white !important;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <h1>Gaziburma Mustafa - İletişim Raporu</h1>
-            <p>Oluşturulma Tarihi: ${todayStr} ${timeStr} &nbsp;&nbsp;|&nbsp;&nbsp; Toplam Kayıt: <b>${callsData.length}</b></p>
+      const fmtDateTR = (d) => {
+        if (!d) return '';
+        // YYYY-MM-DD → GG.AA.YYYY
+        const parts = d.split('-');
+        if (parts.length === 3 && parts[0].length === 4) return `${parts[2]}.${parts[1]}.${parts[0]}`;
+        // Zaten GG.AA.YYYY formatındaysa olduğu gibi döndür
+        return d;
+      };
+      const startDateFmt = fmtDateTR(startDateStr);
+      const endDateFmt = fmtDateTR(endDateStr);
+
+      let htmlContent = '';
+
+      let logoHtml = '';
+      try {
+        const logoFileName = 'Gaziburma Logo (1458x625).png';
+        const candidatePaths = [
+          path.join(app.getAppPath(), logoFileName),
+          path.join(__dirname, '..', logoFileName),
+          path.join(__dirname, logoFileName),
+          path.join(process.resourcesPath || '', '..', logoFileName),
+        ];
+        let foundLogoPath = null;
+        for (const p of candidatePaths) {
+          try { if (fs.existsSync(p)) { foundLogoPath = p; break; } } catch {}
+        }
+        if (foundLogoPath) {
+          const logoData = fs.readFileSync(foundLogoPath);
+          const logoBase64 = `data:image/png;base64,${logoData.toString('base64')}`;
+          logoHtml = `<img src="${logoBase64}" alt="Gaziburma Logo" style="max-height: 55px; display: block; margin: 0 auto 8px auto;" />`;
+          console.log('[A4 Print] Logo yüklendi:', foundLogoPath);
+        } else {
+          console.warn('[A4 Print] Logo dosyası bulunamadı. Denenen yollar:', candidatePaths);
+        }
+      } catch (e) {
+        console.error('Logo yüklenemedi:', e);
+      }
+
+      if (reportType === 'arama_sayisi') {
+        const map = {};
+        callsData.forEach(call => {
+          let rawPhone = (call.phone || '').replace(/\D/g, '');
+          if (rawPhone.length >= 10) rawPhone = rawPhone.slice(-10);
+          if (!rawPhone || rawPhone.length !== 10) return;
+          if (!map[rawPhone]) {
+            map[rawPhone] = { count: 0, lines: new Set(), name: call.name, lastDate: call.date, lastTime: call.time, formattedPhone: call.phone };
+          }
+          map[rawPhone].count += 1;
+          const lineMatch = call.line ? call.line.match(/\d+/) : null;
+          if (lineMatch) map[rawPhone].lines.add('Hat ' + lineMatch[0]);
+          map[rawPhone].lastDate = call.date;
+          map[rawPhone].lastTime = call.time;
+          if (call.name && call.name !== 'Veri Bekleniyor' && call.name.trim() !== '') {
+            map[rawPhone].name = call.name;
+          }
+        });
+
+        const arr = Object.values(map).sort((a,b) => b.count - a.count);
+        let tableRows = '';
+        arr.forEach((item, index) => {
+          const name = item.name && item.name.trim() !== '' ? item.name : 'Kayıtlı değil';
+          const linesStr = Array.from(item.lines).sort().join(', ');
+          tableRows += `
+            <tr>
+              <td style="text-align: center;">${index + 1}</td>
+              <td style="text-align: center; white-space: nowrap;">${item.lastDate}<br/><b>${item.lastTime}</b></td>
+              <td>${name}</td>
+              <td style="white-space: nowrap;">${fmtPhoneA4(item.formattedPhone)}</td>
+              <td style="text-align: center; font-weight: bold; font-size: 14px;">${item.count}</td>
+              <td style="text-align: center;">${linesStr}</td>
+            </tr>
+          `;
+        });
+
+        htmlContent = `
+          <!DOCTYPE html>
+          <html lang="tr">
+          <head>
+            <meta charset="UTF-8">
+            <style>
+              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10px; color: #555; } }
+              body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; padding: 0; margin: 0; color: #111; }
+              .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+              .header h1 { margin: 0; font-size: 20px; color: #000; }
+              .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
+              table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+              th, td { border: 1px solid #ccc; padding: 8px 6px; text-align: left; word-wrap: break-word; }
+              th { background-color: #f1f5f9; font-weight: bold; font-size: 12px; color: #334155; }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              ${logoHtml}
+              <h1>Gaziburma Mustafa - Arama Sayısı Raporu</h1>
+              <p>Oluşturulma Tarihi: <b>${todayStr} ${timeStr}</b></p>
+              <p>Seçilen Tarih Aralığı: <b>${startDateFmt} - ${endDateFmt}</b></p>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 5%; text-align: center;">Sıra</th>
+                  <th style="width: 15%; text-align: center;">Son Arama Tarihi</th>
+                  <th style="width: 30%;">Müşteri Adı / Unvanı</th>
+                  <th style="width: 15%;">Telefon</th>
+                  <th style="width: 15%; text-align: center;">Arama Sayısı</th>
+                  <th style="width: 20%; text-align: center;">Aradığı Hatlar</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tableRows}
+              </tbody>
+            </table>
+          </body>
+          </html>
+        `;
+
+      } else if (reportType === 'hat_bazinda') {
+        const counts = { 1: 0, 2: 0, 3: 0 };
+        let total = 0;
+        callsData.forEach(call => {
+          const m = call.line ? call.line.match(/\d+/) : null;
+          if (m && counts[m[0]] !== undefined) { counts[m[0]]++; total++; }
+        });
+        const max = Math.max(counts[1], counts[2], counts[3], 1);
+
+        htmlContent = `
+          <!DOCTYPE html>
+          <html lang="tr">
+          <head>
+            <meta charset="UTF-8">
+            <style>
+              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10px; color: #555; } }
+              body { font-family: Arial, Helvetica, sans-serif; color: #111; }
+              .header { text-align: center; margin-bottom: 40px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+              .header h1 { margin: 0; font-size: 20px; }
+              .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
+              .bar-container { display: flex; align-items: flex-end; justify-content: space-around; height: 350px; border-bottom: 2px solid #ccc; padding-bottom: 5px; margin: 40px; }
+              .bar-wrapper { display: flex; flex-direction: column; align-items: center; width: 80px; }
+              .bar { width: 100%; border-radius: 4px 4px 0 0; background-color: #38bdf8; display: flex; flex-direction: column; justify-content: flex-start; align-items: center; color: white; font-weight: bold; padding-top: 8px; font-size: 16px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              .label { margin-top: 10px; font-weight: bold; font-size: 14px; }
+              .total { text-align: center; font-size: 16px; margin-top: 20px; }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              ${logoHtml}
+              <h1>Gaziburma Mustafa - Hat Bazında Rapor</h1>
+              <p>Oluşturulma Tarihi: <b>${todayStr} ${timeStr}</b></p>
+              <p>Seçilen Tarih Aralığı: <b>${startDateFmt} - ${endDateFmt}</b></p>
+            </div>
+            <div class="total">Toplam Arama Sayısı: <b>${total}</b></div>
+            <div class="bar-container">
+              ${[1,2,3].map(id => {
+                const heightPct = (counts[id] / max) * 100;
+                return `
+                  <div class="bar-wrapper">
+                    <div class="bar" style="height: ${Math.max(heightPct, 5)}%;">${counts[id]}</div>
+                    <div class="label">Hat ${id}</div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </body>
+          </html>
+        `;
+
+      } else if (reportType === 'gunlere_gore') {
+        const dateMap = {};
+        callsData.forEach(c => {
+          const d = c.date || 'Bilinmiyor';
+          dateMap[d] = (dateMap[d] || 0) + 1;
+        });
+        const totalCalls = callsData.length;
+        const sortedDatesG = Object.keys(dateMap).sort((a,b) => {
+          const pa = a.split('.').reverse().join('');
+          const pb = b.split('.').reverse().join('');
+          return pa.localeCompare(pb);
+        });
+        let maxCountG = Math.max(...Object.values(dateMap), 1);
+        let columnsHtmlG = '';
+        sortedDatesG.forEach(d => {
+          const count = dateMap[d];
+          const heightPct = (count / maxCountG) * 100;
+          columnsHtmlG += `
+            <div style="display:flex; flex-direction:column; align-items:center; flex:1; margin: 0 4px; max-width: 60px;">
+              <div style="flex:1; display:flex; flex-direction:column; justify-content:flex-end; width:100%; background:#f8fafc; border-radius:4px; overflow:hidden;">
+                <div style="height:${Math.max(heightPct, 5)}%; background-color:#38bdf8; -webkit-print-color-adjust:exact; print-color-adjust:exact; width:100%; border-radius:4px 4px 0 0; text-align:center; color:#fff; font-weight:bold; font-size:12px; padding-top:4px;">${count}</div>
+              </div>
+              <div style="font-size:11px; margin-top:8px; color:#334155; font-weight:500;">${d}</div>
+            </div>
+          `;
+        });
+
+        // SVG Çizgi Grafiği
+        const svgWG = 650, svgHG = 220, padLG = 45, padBG = 25, padTG = 25;
+        const cWG = svgWG - padLG * 2;
+        const cHG = svgHG - padBG - padTG;
+        const nG = Math.max(sortedDatesG.length, 1);
+        let pathPtsG = [], circlesG = '', xLabsG = '';
+        sortedDatesG.forEach((d, i) => {
+          const x = padLG + (i * cWG) / Math.max(nG - 1, 1);
+          const y = padTG + cHG - (dateMap[d] / maxCountG) * cHG;
+          pathPtsG.push(`${x},${y}`);
+          circlesG += `<circle cx="${x}" cy="${y}" r="4" fill="#ef4444" />`;
+          circlesG += `<text x="${x}" y="${y - 8}" font-size="10" font-weight="bold" text-anchor="middle" fill="#1e293b">${dateMap[d]}</text>`;
+          xLabsG += `<text x="${x}" y="${svgHG - 8}" font-size="10" text-anchor="middle" fill="#475569">${d}</text>`;
+        });
+        const yLabsG = `
+          <text x="${padLG - 10}" y="${padTG + cHG}" font-size="10" text-anchor="end" alignment-baseline="middle">0</text>
+          <text x="${padLG - 10}" y="${padTG}" font-size="10" text-anchor="end" alignment-baseline="middle">${maxCountG}</text>
+          <line x1="${padLG}" y1="${padTG}" x2="${svgWG - padLG}" y2="${padTG}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4" />
+        `;
+        const svgAxesG = `
+          <line x1="${padLG}" y1="${padTG}" x2="${padLG}" y2="${padTG + cHG}" stroke="#94a3b8" stroke-width="2" />
+          <line x1="${padLG}" y1="${padTG + cHG}" x2="${svgWG - padLG}" y2="${padTG + cHG}" stroke="#94a3b8" stroke-width="2" />
+        `;
+        const svgChartHtmlG = `
+          <h3 style="margin-top:30px; text-align:center; color:#334155; font-size:15px;">X-Y Çizgi Grafiği (Gün / Arama Sayısı)</h3>
+          <div style="display:flex; justify-content:center;">
+            <svg width="100%" height="${svgHG}" viewBox="0 0 ${svgWG} ${svgHG}" style="background:#fff; border:1px solid #cbd5e1; border-radius:8px; width:100%; max-width:${svgWG}px;">
+              ${yLabsG}
+              ${svgAxesG}
+              ${xLabsG}
+              <polyline points="${pathPtsG.join(' ')}" fill="none" stroke="#3b82f6" stroke-width="2" />
+              ${circlesG}
+            </svg>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 5%; text-align: center;">Sıra</th>
-                <th style="width: 10%; text-align: center;">Tarih/Saat</th>
-                <th style="width: 20%;">Müşteri Adı / Unvanı</th>
-                <th style="width: 15%;">Telefon</th>
-                <th style="width: 40%;">Adres Bilgisi</th>
-                <th style="width: 10%; text-align: center;">Hat</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${tableRows}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td colspan="6" class="footer-cell">
-                  Hat 1: (216) 354 11 82 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 2: (216) 483 27 27 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 3: (216) 354 27 27
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </body>
-        </html>
-      `;
+        `;
+
+        htmlContent = `
+          <!DOCTYPE html>
+          <html lang="tr">
+          <head>
+            <meta charset="UTF-8">
+            <style>
+              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10px; color: #555; } }
+              body { font-family: Arial, Helvetica, sans-serif; color: #111; }
+              .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+              .header h1 { margin: 0; font-size: 20px; }
+              .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
+              .info-box { background: #f1f5f9; padding: 12px; border-radius: 8px; text-align: center; font-size: 14px; margin-bottom: 20px; border: 1px solid #cbd5e1; }
+              .chart-container { display: flex; align-items: flex-end; justify-content: center; height: 200px; padding-bottom: 10px; margin: 0 10px; border-bottom: 2px solid #e2e8f0; }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              ${logoHtml}
+              <h1>Gaziburma Mustafa - Günlere Göre Rapor</h1>
+              <p>Oluşturulma Tarihi: <b>${todayStr} ${timeStr}</b></p>
+              <p>Seçilen Tarih Aralığı: <b>${startDateFmt} - ${endDateFmt}</b></p>
+            </div>
+            <div class="info-box">
+              Seçilen tarih aralığında toplam <b>${totalCalls}</b> arama kaydı bulunmaktadır.
+            </div>
+            <h3 style="text-align:center; color:#334155; font-size:15px; margin:0 0 10px 0;">Günlük Arama Sütun Grafiği</h3>
+            <div class="chart-container">${columnsHtmlG}</div>
+            ${svgChartHtmlG}
+          </body>
+          </html>
+        `;
+
+      } else if (reportType === 'ozel_rapor') {
+        const rawTarget = customReportPhone.replace(/\D/g, '').slice(-10);
+        const targetCalls = callsData.filter(c => {
+          let p = (c.phone || '').replace(/\D/g, '');
+          if (p.length >= 10) p = p.slice(-10);
+          return p === rawTarget;
+        });
+
+        const dateMap = {};
+        let totalCalls = targetCalls.length;
+        let customerName = 'Kayıtlı Değil';
+
+        targetCalls.forEach(c => {
+          if (c.name && c.name !== 'Veri Bekleniyor' && c.name.trim() !== '') customerName = c.name;
+          const d = c.date || 'Bilinmiyor';
+          dateMap[d] = (dateMap[d] || 0) + 1;
+        });
+
+        let maxCount = Math.max(...Object.values(dateMap), 1);
+        let columnsHtml = '';
+        
+        const sortedDates = Object.keys(dateMap).sort((a,b) => {
+           const pa = a.split('.').reverse().join('');
+           const pb = b.split('.').reverse().join('');
+           return pa.localeCompare(pb);
+        });
+        
+        sortedDates.forEach(d => {
+           const count = dateMap[d];
+           const heightPct = (count / maxCount) * 100;
+           columnsHtml += `
+             <div style="display:flex; flex-direction:column; align-items:center; flex:1; margin: 0 4px; max-width: 60px;">
+               <div style="flex:1; display:flex; flex-direction:column; justify-content:flex-end; width:100%; background:#f8fafc; border-radius:4px; overflow:hidden;">
+                  <div style="height:${Math.max(heightPct, 5)}%; background:-webkit-print-color-adjust: exact; background-color:#14b8a6; width:100%; border-radius:4px 4px 0 0; text-align:center; color:#fff; font-weight:bold; font-size:12px; padding-top:4px;">${count}</div>
+               </div>
+               <div style="font-size:11px; margin-top:8px; color:#334155; font-weight: 500;">${d}</div>
+             </div>
+           `;
+        });
+
+        // EKSEN GRAFİĞİ İÇİN SVG YÖNTEMİ
+        const svgWidth = 650;
+        const svgHeight = 220;
+        const paddingLat = 40;
+        const paddingBot = 25;
+        const paddingTop = 25;
+        const chartW = svgWidth - paddingLat * 2;
+        const chartH = svgHeight - paddingBot - paddingTop;
+        const n = Math.max(sortedDates.length, 1);
+        
+        let pathPoints = [];
+        let circles = '';
+        let xLabels = '';
+        
+        sortedDates.forEach((d, i) => {
+          const x = paddingLat + (i * chartW) / Math.max(n - 1, 1);
+          const y = paddingTop + chartH - (dateMap[d] / maxCount) * chartH;
+          pathPoints.push(`${x},${y}`);
+          circles += `<circle cx="${x}" cy="${y}" r="4" fill="#ef4444" />`;
+          circles += `<text x="${x}" y="${y - 8}" font-size="10" font-weight="bold" text-anchor="middle" fill="#1e293b">${dateMap[d]}</text>`;
+          xLabels += `<text x="${x}" y="${svgHeight - 8}" font-size="10" text-anchor="middle" fill="#475569">${d}</text>`;
+        });
+        
+        const yLabels = `
+          <text x="${paddingLat - 10}" y="${paddingTop + chartH}" font-size="10" text-anchor="end" alignment-baseline="middle">0</text>
+          <text x="${paddingLat - 10}" y="${paddingTop}" font-size="10" text-anchor="end" alignment-baseline="middle">${maxCount}</text>
+          <line x1="${paddingLat}" y1="${paddingTop}" x2="${svgWidth - paddingLat}" y2="${paddingTop}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4" />
+        `;
+        
+        const svgAxes = `
+          <!-- Y ekseni -->
+          <line x1="${paddingLat}" y1="${paddingTop}" x2="${paddingLat}" y2="${paddingTop + chartH}" stroke="#94a3b8" stroke-width="2" />
+          <!-- X ekseni -->
+          <line x1="${paddingLat}" y1="${paddingTop + chartH}" x2="${svgWidth - paddingLat}" y2="${paddingTop + chartH}" stroke="#94a3b8" stroke-width="2" />
+        `;
+
+        const svgChartHtml = `
+          <h3 style="margin-top:40px; text-align:center; color:#334155; font-size:16px;">X-Y Çizgi Grafiği</h3>
+          <div style="display:flex; justify-content:center;">
+            <svg width="100%" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" style="background:#fff; border:1px solid #cbd5e1; border-radius:8px; width:100%; max-width:${svgWidth}px;">
+              ${yLabels}
+              ${svgAxes}
+              ${xLabels}
+              <polyline points="${pathPoints.join(' ')}" fill="none" stroke="#3b82f6" stroke-width="2" />
+              ${circles}
+            </svg>
+          </div>
+        `;
+
+        htmlContent = `
+          <!DOCTYPE html>
+          <html lang="tr">
+          <head>
+            <meta charset="UTF-8">
+            <style>
+              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10px; color: #555; } }
+              body { font-family: Arial, Helvetica, sans-serif; color: #111; }
+              .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+              .header h1 { margin: 0; font-size: 20px; }
+              .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
+              .info-box { background: #f1f5f9; padding: 15px; border-radius: 8px; text-align: center; font-size: 14px; margin-bottom: 25px; border: 1px solid #cbd5e1; }
+              .chart-container { display: flex; align-items: flex-end; justify-content: center; height: 200px; padding-bottom: 10px; margin: 0 10px; border-bottom: 2px solid #e2e8f0; }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              ${logoHtml}
+              <h1>Gaziburma Mustafa - Özel Rapor Grafiği</h1>
+              <p>Oluşturulma Tarihi: <b>${todayStr} ${timeStr}</b></p>
+              <p>Seçilen Tarih Aralığı: <b>${startDateFmt} - ${endDateFmt}</b></p>
+            </div>
+            <div class="info-box">
+              Müşteri: <b>${customerName}</b> &nbsp;&nbsp;|&nbsp;&nbsp; 
+              Telefon: <b>${fmtPhoneA4(customReportPhone)}</b><br/>
+              Belirtilen tarih aralığında toplam <b>${totalCalls}</b> kez arama yapılmıştır.
+            </div>
+            
+            ${totalCalls > 0 ? `
+              <h3 style="text-align:center; color:#334155; font-size:16px; margin:0 0 10px 0;">Arama Sayısı Sütun Trafiği</h3>
+              <div class="chart-container">${columnsHtml}</div>
+              ${svgChartHtml}
+            ` : `<p style="text-align:center;">Bu kriterlere uygun arama bulunamadı.</p>`}
+          </body>
+          </html>
+        `;
+
+      } else {
+        let tableRows = '';
+        callsData.forEach((call, index) => {
+          const name = call.name && call.name.trim() !== '' ? call.name : 'Kayıtlı değil';
+          const phone = fmtPhoneA4(call.phone);
+          const addr = call.address && call.address.trim() !== '' ? call.address : 'Kayıtlı değil';
+          
+          const lineMatch = call.line ? call.line.match(/\d+/) : null;
+          const lineId = lineMatch ? lineMatch[0] : '';
+          const lineStr = lineId ? `Hat ${lineId}` : '-';
+
+          let bgColor = '';
+          if (lineId === '1') bgColor = '#e0f2fe';
+          else if (lineId === '2') bgColor = '#dcfce3';
+          else if (lineId === '3') bgColor = '#ffedd5';
+
+          const callDate = call.date || '';
+          const callTime = call.time || '';
+
+          tableRows += `
+            <tr style="${bgColor ? 'background-color: ' + bgColor + ';' : ''}">
+              <td style="text-align: center;">${index + 1}</td>
+              <td style="text-align: center; white-space: nowrap;">${callDate}<br/><b>${callTime}</b></td>
+              <td>${name}</td>
+              <td style="white-space: nowrap;">${phone}</td>
+              <td>${addr}</td>
+              <td style="text-align: center; font-weight: bold;">${lineStr}</td>
+            </tr>
+          `;
+        });
+
+        htmlContent = `
+          <!DOCTYPE html>
+          <html lang="tr">
+          <head>
+            <meta charset="UTF-8">
+            <style>
+              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10px; color: #555; } }
+              body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; padding: 0; margin: 0; color: #111; }
+              .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+              .header h1 { margin: 0; font-size: 20px; color: #000; }
+              .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
+              table { width: 100%; border-collapse: collapse; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+              th, td { border: 1px solid #ccc; padding: 8px 6px; text-align: left; vertical-align: middle; word-wrap: break-word; }
+              th { background-color: #f1f5f9; font-weight: bold; font-size: 12px; color: #334155; }
+              tr { page-break-inside: avoid; break-inside: avoid; }
+              td { font-size: 11px; color: #1e293b; }
+              tfoot { display: table-footer-group; }
+              .footer-cell {
+                border: none !important;
+                text-align: center; font-size: 11px; font-weight: 700;
+                padding-top: 15px !important; color: #334155;
+                background-color: white !important;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              ${logoHtml}
+              <h1>Gaziburma Mustafa - Sipariş Arama Raporu</h1>
+              <p>Oluşturulma Tarihi: <b>${todayStr} ${timeStr}</b></p>
+              <p>Seçilen Tarih Aralığı: <b>${startDateFmt} - ${endDateFmt}</b> &nbsp;&nbsp;|&nbsp;&nbsp; Toplam Kayıt: <b>${callsData.length}</b></p>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 5%; text-align: center;">Sıra</th>
+                  <th style="width: 10%; text-align: center;">Tarih/Saat</th>
+                  <th style="width: 20%;">Müşteri Adı / Unvanı</th>
+                  <th style="width: 15%;">Telefon</th>
+                  <th style="width: 40%;">Adres Bilgisi</th>
+                  <th style="width: 10%; text-align: center;">Hat</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tableRows}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colspan="6" class="footer-cell">
+                    Hat 1: (216) 354 11 82 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 2: (216) 483 27 27 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 3: (216) 354 27 27
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </body>
+          </html>
+        `;
+      }
 
       const printWin = new BrowserWindow({
         show: false,

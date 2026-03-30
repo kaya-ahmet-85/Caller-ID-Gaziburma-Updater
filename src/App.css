@@ -1235,3 +1235,8 @@ html.windowed-scroll .line-box {
   from { opacity: 0; transform: translateX(120px) scale(0.9); }
   to   { opacity: 1; transform: translateX(0)       scale(1);   }
 }
+
+@keyframes marquee-dynamic {
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(var(--overflow-amount, 0)); }
+}

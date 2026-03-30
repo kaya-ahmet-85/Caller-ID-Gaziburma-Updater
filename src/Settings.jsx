@@ -142,7 +142,12 @@ const Settings = () => {
   // Raporlama state'i
   const [reportStartDate, setReportStartDate] = useState(new Date().toLocaleDateString('en-CA'));
   const [reportEndDate, setReportEndDate] = useState(new Date().toLocaleDateString('en-CA'));
+  const [useTimeRange, setUseTimeRange] = useState(false);
+  const [reportStartTime, setReportStartTime] = useState('00:00');
+  const [reportEndTime, setReportEndTime] = useState('23:59');
   const [reportLines, setReportLines] = useState({ 1: true, 2: true, 3: true });
+  const [reportType, setReportType] = useState('cagri_listesi');
+  const [customReportPhone, setCustomReportPhone] = useState('');
   const [printingReport, setPrintingReport] = useState(false);
   const [reportSuccess, setReportSuccess] = useState(false);
 
@@ -170,8 +175,17 @@ const Settings = () => {
         return new Date(`${parts[2]}-${parts[1]}-${parts[0]}T00:00:00`);
       };
 
-      const start = new Date(reportStartDate); start.setHours(0,0,0,0);
-      const end = new Date(reportEndDate); end.setHours(23,59,59,999);
+      const start = new Date(reportStartDate);
+      const end = new Date(reportEndDate);
+      if (useTimeRange) {
+        const [sh, sm] = reportStartTime.split(':').map(Number);
+        const [eh, em] = reportEndTime.split(':').map(Number);
+        start.setHours(sh, sm, 0, 0);
+        end.setHours(eh, em, 59, 999);
+      } else {
+        start.setHours(0, 0, 0, 0);
+        end.setHours(23, 59, 59, 999);
+      }
 
       const filteredCalls = callHistory.filter((call) => {
         const lineMatch = call.line ? call.line.match(/\d+/) : null;
@@ -179,31 +193,77 @@ const Settings = () => {
         if (lineId && !reportLines[lineId]) return false;
 
         const callDate = parseTrDate(call.date);
-        if (callDate) {
+        if (!callDate) return true;
+
+        if (useTimeRange) {
+          // Tarih + saat birlikte karşılaştır
+          const [ch, cm] = (call.time || '00:00').split(':').map(Number);
+          callDate.setHours(ch, cm, 0, 0);
           if (callDate < start || callDate > end) return false;
+        } else {
+          const dayStart = new Date(callDate); dayStart.setHours(0,0,0,0);
+          if (dayStart < start || dayStart > end) return false;
         }
         return true;
       }).sort((a, b) => {
         const da = parseTrDate(a.date);
         const db = parseTrDate(b.date);
         if (!da || !db) return 0;
-        
-        if (da.getTime() !== db.getTime()) {
-          return da.getTime() - db.getTime();
-        }
-        
+        if (da.getTime() !== db.getTime()) return da.getTime() - db.getTime();
         const ta = a.time || '00:00';
         const tb = b.time || '00:00';
         return ta.localeCompare(tb);
       });
 
-      if (filteredCalls.length === 0) {
-        alert("Seçilen kriterlere uyan hiçbir çağrı kaydı bulunamadı.");
-        setPrintingReport(false);
-        return;
+      let finalCalls = filteredCalls;
+
+      if (reportType === 'ozel_rapor') {
+        const rawPhone = customReportPhone.replace(/\D/g, '');
+        if (rawPhone.length !== 10) {
+          alert("Lütfen 10 haneli (başında 0 olmadan) geçerli bir telefon numarası giriniz.");
+          setPrintingReport(false);
+          return;
+        }
+        
+        finalCalls = filteredCalls.filter(c => {
+          let p = (c.phone || '').replace(/\D/g, '');
+          if (p.length >= 10) p = p.slice(-10);
+          return p === rawPhone;
+        });
+
+        if (finalCalls.length === 0) {
+          const hasAnyHistory = callHistory.some(c => {
+            let p = (c.phone || '').replace(/\D/g, '');
+            if (p.length >= 10) p = p.slice(-10);
+            return p === rawPhone;
+          });
+          
+          if (hasAnyHistory) {
+            alert(`Yazdığınız numaranın araması mevcut, ancak seçmiş olduğunuz tarih aralığında (${reportStartDate} - ${reportEndDate}) araması bulunmamaktadır. Tümünü görmek için Tarih Aralığı Seçimini genişletin.`);
+          } else {
+            alert(`Yazdığınız numaraya ait tüm geçmişte hiçbir arama kaydı bulunamadı.`);
+          }
+          setPrintingReport(false);
+          return;
+        }
+      } else {
+        if (finalCalls.length === 0) {
+          alert("Seçilen kriterlere uyan hiçbir çağrı kaydı bulunamadı.");
+          setPrintingReport(false);
+          return;
+        }
       }
 
-      const result = await window.electronAPI.printA4Report(filteredCalls, currentReportPrinter);
+      const options = {
+        reportType,
+        customReportPhone,
+        startDateStr: reportStartDate,
+        endDateStr: reportEndDate,
+        startTimeStr: useTimeRange ? reportStartTime : null,
+        endTimeStr: useTimeRange ? reportEndTime : null,
+      };
+
+      const result = await window.electronAPI.printA4Report(finalCalls, currentReportPrinter, options);
       if (result && result.success) {
         setReportSuccess(true);
         setTimeout(() => setReportSuccess(false), 3000);
@@ -626,7 +686,7 @@ const Settings = () => {
           <p className="printer-section-desc">Belirlediğiniz tarih aralığı ve telefon hatlarına göre geçmiş çağrı listesini A4 formatında "Rapor Yazıcınız" üzerinden yazdırın.</p>
 
           <div style={{ background: '#f8fafc', padding: '20px', borderRadius: '12px', border: '1px solid #e2e8f0', marginTop: '16px' }}>
-            <h4 style={{ margin: '0 0 16px', fontSize: '15px', color: '#0f172a' }}>Tarih Aralığı Seçimi</h4>
+            <h4 style={{ margin: '0 0 16px', fontSize: '15px', color: '#0f172a' }}>Tarih Aralığı Filtresi</h4>
             <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: '200px' }}>
                 <label style={{ fontSize: '13px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '8px' }}>Başlangıç Tarihi</label>
@@ -651,22 +711,102 @@ const Settings = () => {
                 />
               </div>
             </div>
+
+            {/* Saat Aralığı */}
+            <div style={{ marginTop: '16px', borderTop: '1px solid #e2e8f0', paddingTop: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: useTimeRange ? '14px' : '0' }}>
+                <h4 style={{ margin: '0', fontSize: '15px', color: '#0f172a' }}>Saat Aralığı Filtresi</h4>
+                <input
+                  type="checkbox"
+                  checked={useTimeRange}
+                  onChange={(e) => setUseTimeRange(e.target.checked)}
+                  style={{ width: '18px', height: '18px', accentColor: '#38bdf8', cursor: 'pointer' }}
+                />
+              </div>
+              {useTimeRange && (
+                <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: '160px' }}>
+                    <label style={{ fontSize: '13px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '8px' }}>Başlangıç Saati</label>
+                    <input
+                      type="time"
+                      value={reportStartTime}
+                      onChange={(e) => setReportStartTime(e.target.value)}
+                      style={{ width: '100%', padding: '10px 14px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box', fontFamily: 'inherit' }}
+                      onFocus={e => e.target.style.borderColor = '#38bdf8'}
+                      onBlur={e => e.target.style.borderColor = '#e2e8f0'}
+                    />
+                  </div>
+                  <div style={{ flex: 1, minWidth: '160px' }}>
+                    <label style={{ fontSize: '13px', fontWeight: '600', color: '#475569', display: 'block', marginBottom: '8px' }}>Bitiş Saati</label>
+                    <input
+                      type="time"
+                      value={reportEndTime}
+                      onChange={(e) => setReportEndTime(e.target.value)}
+                      style={{ width: '100%', padding: '10px 14px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box', fontFamily: 'inherit' }}
+                      onFocus={e => e.target.style.borderColor = '#38bdf8'}
+                      onBlur={e => e.target.style.borderColor = '#e2e8f0'}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
-          <div style={{ background: '#f8fafc', padding: '20px', borderRadius: '12px', border: '1px solid #e2e8f0', marginTop: '20px' }}>
-            <h4 style={{ margin: '0 0 16px', fontSize: '15px', color: '#0f172a' }}>Hat Seçimi</h4>
-            <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
-              {[1, 2, 3].map(id => (
-                <label key={id} style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#334155' }}>
-                  <input 
-                    type="checkbox" 
-                    checked={reportLines[id]}
-                    onChange={(e) => setReportLines(prev => ({ ...prev, [id]: e.target.checked }))}
-                    style={{ width: '18px', height: '18px', accentColor: '#38bdf8', cursor: 'pointer' }}
-                  />
-                  Hat {id}
-                </label>
-              ))}
+          <div style={{ background: '#f8fafc', padding: '20px', borderRadius: '12px', border: '1px solid #e2e8f0', marginTop: '20px', display: 'flex', gap: '30px' }}>
+            <div style={{ flex: 1 }}>
+              <h4 style={{ margin: '0 0 16px', fontSize: '15px', color: '#0f172a' }}>Hat Seçimi</h4>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                {[1, 2, 3].map(id => (
+                  <label key={id} style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#334155' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={reportLines[id]}
+                      onChange={(e) => setReportLines(prev => ({ ...prev, [id]: e.target.checked }))}
+                      style={{ width: '18px', height: '18px', accentColor: '#38bdf8', cursor: 'pointer' }}
+                    />
+                    Hat {id}
+                  </label>
+                ))}
+              </div>
+            </div>
+            
+            <div style={{ width: '2px', background: '#e2e8f0', borderRadius: '2px' }}></div>
+            
+            <div style={{ flex: 1 }}>
+              <h4 style={{ margin: '0 0 16px', fontSize: '15px', color: '#0f172a' }}>Rapor Türü</h4>
+              <div style={{ display: 'flex', gap: '12px', flexDirection: 'column' }}>
+                <select 
+                  value={reportType}
+                  onChange={(e) => setReportType(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box', fontFamily: 'inherit', fontSize: '14px', color: '#1e293b', cursor: 'pointer', backgroundColor: '#fff' }}
+                  onFocus={e => e.target.style.borderColor = '#38bdf8'}
+                  onBlur={e => e.target.style.borderColor = '#e2e8f0'}
+                >
+                  <option value="cagri_listesi">Çağrı Listesi Raporu</option>
+                  <option value="arama_sayisi">Arama Sayısı Raporu</option>
+                  <option value="hat_bazinda">Hat Bazında Rapor</option>
+                  <option value="gunlere_gore">Günlere Göre Rapor</option>
+                  <option value="ozel_rapor">Özel Rapor</option>
+                </select>
+
+                {reportType === 'ozel_rapor' && (
+                  <div>
+                    <input
+                      type="tel"
+                      placeholder="10 haneli telefon numarasını yazınız"
+                      value={customReportPhone}
+                      onChange={(e) => {
+                        let val = e.target.value.replace(/\D/g, '');
+                        if (val.length > 10) val = val.slice(0, 10);
+                        setCustomReportPhone(val);
+                      }}
+                      style={{ width: '100%', padding: '10px 14px', border: '2px solid #e2e8f0', borderRadius: '8px', outline: 'none', transition: '0.2s', boxSizing: 'border-box', fontFamily: 'inherit', fontSize: '14px', color: '#1e293b' }}
+                      onFocus={e => e.target.style.borderColor = '#38bdf8'}
+                      onBlur={e => e.target.style.borderColor = '#e2e8f0'}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
