@@ -782,10 +782,10 @@ const Settings = () => {
                   onFocus={e => e.target.style.borderColor = '#38bdf8'}
                   onBlur={e => e.target.style.borderColor = '#e2e8f0'}
                 >
-                  <option value="cagri_listesi">Çağrı Listesi Raporu</option>
                   <option value="arama_sayisi">Arama Sayısı Raporu</option>
-                  <option value="hat_bazinda">Hat Bazında Rapor</option>
+                  <option value="cagri_listesi">Çağrı Listesi Raporu</option>
                   <option value="gunlere_gore">Günlere Göre Rapor</option>
+                  <option value="hat_bazinda">Hat Bazında Rapor</option>
                   <option value="ozel_rapor">Özel Rapor</option>
                 </select>
 

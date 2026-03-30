@@ -2006,7 +2006,28 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
         return { success: false, error: 'Rapor yazıcısı seçilmemiş. Lütfen Ayarlar > Yazıcılar menüsünden Rapor Yazıcınızı seçin.' };
       }
 
-      const { reportType = 'cagri_listesi', customReportPhone = '', startDateStr = '', endDateStr = '' } = options;
+      const { reportType = 'cagri_listesi', customReportPhone = '', startDateStr = '', endDateStr = '', startTimeStr = null, endTimeStr = null } = options;
+
+      // Hat numaralarını ayarlardan oku
+      let hatNumbers = { 1: '', 2: '', 3: '' };
+      try {
+        const hatConfigPath = path.join(app.getPath('userData'), 'hat-config.json');
+        if (fs.existsSync(hatConfigPath)) {
+          const hd = JSON.parse(fs.readFileSync(hatConfigPath, 'utf-8'));
+          hatNumbers = hd.hatNumbers || hatNumbers;
+        }
+      } catch (e) { console.warn('[A4 Print] Hat config okunamadı:', e); }
+
+      const hatFooterHtml = `
+        <div style="margin-top:20px; padding-top:12px; border-top:2px solid #e2e8f0; text-align:center; font-size:11px; color:#475569;">
+          <b>Hat Bilgileri:</b>
+          &nbsp;&nbsp;Hat 1: <b>${hatNumbers[1] || '-'}</b>
+          &nbsp;&nbsp;|&nbsp;&nbsp;
+          Hat 2: <b>${hatNumbers[2] || '-'}</b>
+          &nbsp;&nbsp;|&nbsp;&nbsp;
+          Hat 3: <b>${hatNumbers[3] || '-'}</b>
+        </div>
+      `;
 
       const fmtPhoneA4 = (raw) => {
         const d = (raw || '').toString().replace(/\D/g, '');
@@ -2031,6 +2052,11 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
       };
       const startDateFmt = fmtDateTR(startDateStr);
       const endDateFmt = fmtDateTR(endDateStr);
+
+      // Saat filtresi kullanıldıysa "GG.AA.YYYY/SS:DD - GG.AA.YYYY/SS:DD" formatında göster
+      const dateRangeDisplay = (startTimeStr && endTimeStr)
+        ? `${startDateFmt} / ${startTimeStr} - ${endDateFmt} / ${endTimeStr}`
+        : `${startDateFmt} - ${endDateFmt}`;
 
       let htmlContent = '';
 
@@ -2066,11 +2092,14 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
           if (rawPhone.length >= 10) rawPhone = rawPhone.slice(-10);
           if (!rawPhone || rawPhone.length !== 10) return;
           if (!map[rawPhone]) {
-            map[rawPhone] = { count: 0, lines: new Set(), name: call.name, lastDate: call.date, lastTime: call.time, formattedPhone: call.phone };
+            map[rawPhone] = { count: 0, lineCounts: {}, name: call.name, lastDate: call.date, lastTime: call.time, formattedPhone: call.phone };
           }
           map[rawPhone].count += 1;
           const lineMatch = call.line ? call.line.match(/\d+/) : null;
-          if (lineMatch) map[rawPhone].lines.add('Hat ' + lineMatch[0]);
+          if (lineMatch) {
+            const hatKey = 'Hat ' + lineMatch[0];
+            map[rawPhone].lineCounts[hatKey] = (map[rawPhone].lineCounts[hatKey] || 0) + 1;
+          }
           map[rawPhone].lastDate = call.date;
           map[rawPhone].lastTime = call.time;
           if (call.name && call.name !== 'Veri Bekleniyor' && call.name.trim() !== '') {
@@ -2082,7 +2111,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
         let tableRows = '';
         arr.forEach((item, index) => {
           const name = item.name && item.name.trim() !== '' ? item.name : 'Kayıtlı değil';
-          const linesStr = Array.from(item.lines).sort().join(', ');
+          const linesStr = Object.keys(item.lineCounts).sort().map(h => `<span style="white-space:nowrap">${h} (${item.lineCounts[h]})</span>`).join(', ');
           tableRows += `
             <tr>
               <td style="text-align: center;">${index + 1}</td>
@@ -2101,8 +2130,9 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
           <head>
             <meta charset="UTF-8">
             <style>
-              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10px; color: #555; } }
-              body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; padding: 0; margin: 0; color: #111; }
+              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Calibri, "Segoe UI", Arial, sans-serif; font-size: 10px; color: #555; } }
+              body { font-family: Calibri, "Segoe UI", Arial, sans-serif; font-size: 11px; padding: 0; margin: 0; color: #111; }
+              * { font-feature-settings: "liga" 0, "clig" 0, "calt" 0; font-variant-ligatures: none; font-variant: normal; }
               .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
               .header h1 { margin: 0; font-size: 20px; color: #000; }
               .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
@@ -2116,7 +2146,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
               ${logoHtml}
               <h1>Gaziburma Mustafa - Arama Sayısı Raporu</h1>
               <p>Oluşturulma Tarihi: <b>${todayStr} ${timeStr}</b></p>
-              <p>Seçilen Tarih Aralığı: <b>${startDateFmt} - ${endDateFmt}</b></p>
+              <p>Seçilen Tarih Aralığı: <b>${dateRangeDisplay}</b></p>
             </div>
             <table>
               <thead>
@@ -2133,6 +2163,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
                 ${tableRows}
               </tbody>
             </table>
+            ${hatFooterHtml}
           </body>
           </html>
         `;
@@ -2140,11 +2171,103 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
       } else if (reportType === 'hat_bazinda') {
         const counts = { 1: 0, 2: 0, 3: 0 };
         let total = 0;
+
+        // Tarih x Hat matrisi
+        const hatColors = { 1: '#3b82f6', 2: '#22c55e', 3: '#f97316' };
+        const dateHatMap = {}; // { 'GG.AA.YYYY': { 1: N, 2: N, 3: N } }
+
         callsData.forEach(call => {
           const m = call.line ? call.line.match(/\d+/) : null;
-          if (m && counts[m[0]] !== undefined) { counts[m[0]]++; total++; }
+          if (m && counts[m[0]] !== undefined) {
+            counts[m[0]]++;
+            total++;
+            const d = call.date || 'Bilinmiyor';
+            if (!dateHatMap[d]) dateHatMap[d] = { 1: 0, 2: 0, 3: 0 };
+            dateHatMap[d][m[0]]++;
+          }
         });
+
         const max = Math.max(counts[1], counts[2], counts[3], 1);
+
+        // Tarihleri sırala
+        const sortedDatesH = Object.keys(dateHatMap).sort((a, b) => {
+          const pa = a.split('.').reverse().join('');
+          const pb = b.split('.').reverse().join('');
+          return pa.localeCompare(pb);
+        });
+
+        // SVG çizgi grafiği
+        const svgW = 520, svgH = 230, padL = 45, padB = 30, padT = 20, padR = 20;
+        const cW = svgW - padL - padR;
+        const cH = svgH - padB - padT;
+        const nDates = Math.max(sortedDatesH.length, 1);
+        const maxDaily = Math.max(...sortedDatesH.map(d => Math.max(dateHatMap[d][1], dateHatMap[d][2], dateHatMap[d][3])), 1);
+
+        let svgLines = '';
+        let svgDots = '';
+        let xLabels = '';
+
+        sortedDatesH.forEach((d, i) => {
+          const x = padL + (i * cW) / Math.max(nDates - 1, 1);
+          xLabels += `<text x="${x}" y="${svgH - 8}" font-size="9" text-anchor="middle" fill="#475569">${d}</text>`;
+        });
+
+        [1, 2, 3].forEach(id => {
+          const color = hatColors[id];
+          let pts = [];
+          sortedDatesH.forEach((d, i) => {
+            const x = padL + (i * cW) / Math.max(nDates - 1, 1);
+            const y = padT + cH - (dateHatMap[d][id] / maxDaily) * cH;
+            pts.push(`${x},${y}`);
+            svgDots += `<circle cx="${x}" cy="${y}" r="3.5" fill="${color}" />`;
+            if (dateHatMap[d][id] > 0) {
+              svgDots += `<text x="${x}" y="${y - 7}" font-size="9" font-weight="bold" text-anchor="middle" fill="${color}">${dateHatMap[d][id]}</text>`;
+            }
+          });
+          if (pts.length > 1) {
+            svgLines += `<polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="2" />`;
+          }
+        });
+
+        // Y ekseni kılavuz çizgileri
+        const yGuides = [0, 0.25, 0.5, 0.75, 1].map(frac => {
+          const y = padT + cH - frac * cH;
+          const val = Math.round(frac * maxDaily);
+          return `<line x1="${padL}" y1="${y}" x2="${svgW - padR}" y2="${y}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="3"/>
+                  <text x="${padL - 6}" y="${y}" font-size="9" text-anchor="end" alignment-baseline="middle" fill="#64748b">${val}</text>`;
+        }).join('');
+
+        const svgAxes = `
+          <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + cH}" stroke="#94a3b8" stroke-width="2"/>
+          <line x1="${padL}" y1="${padT + cH}" x2="${svgW - padR}" y2="${padT + cH}" stroke="#94a3b8" stroke-width="2"/>
+        `;
+
+        // Legend
+        const legendHtml = `
+          <div style="display:flex; flex-direction:column; justify-content:center; gap:10px; padding-left:16px; border-left:2px solid #e2e8f0;">
+            ${[1,2,3].map(id => `
+              <div style="display:flex; align-items:center; gap:8px; white-space:nowrap;">
+                <svg width="28" height="4"><line x1="0" y1="2" x2="28" y2="2" stroke="${hatColors[id]}" stroke-width="3"/></svg>
+                <span style="font-size:12px; color:#334155; font-weight:bold;">Hat ${id}</span>
+                <span style="font-size:12px; color:#64748b;">(${counts[id]} çağrı)</span>
+              </div>
+            `).join('')}
+          </div>
+        `;
+
+        const svgChartBlock = sortedDatesH.length > 0 ? `
+          <h3 style="text-align:center; color:#334155; font-size:15px; margin:30px 0 10px 0;">Tarihe Göre Hat Bazında Çağrı Grafiği</h3>
+          <div style="display:flex; align-items:stretch; justify-content:center; gap:0;">
+            <svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="border:1px solid #cbd5e1; border-radius:8px; background:#fff; flex-shrink:0;">
+              ${yGuides}
+              ${svgAxes}
+              ${xLabels}
+              ${svgLines}
+              ${svgDots}
+            </svg>
+            ${legendHtml}
+          </div>
+        ` : '';
 
         htmlContent = `
           <!DOCTYPE html>
@@ -2152,12 +2275,13 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
           <head>
             <meta charset="UTF-8">
             <style>
-              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10px; color: #555; } }
-              body { font-family: Arial, Helvetica, sans-serif; color: #111; }
+              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Calibri, "Segoe UI", Arial, sans-serif; font-size: 10px; color: #555; } }
+              body { font-family: Calibri, "Segoe UI", Arial, sans-serif; color: #111; }
+              * { font-feature-settings: "liga" 0, "clig" 0, "calt" 0; font-variant-ligatures: none; font-variant: normal; }
               .header { text-align: center; margin-bottom: 40px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
               .header h1 { margin: 0; font-size: 20px; }
               .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
-              .bar-container { display: flex; align-items: flex-end; justify-content: space-around; height: 350px; border-bottom: 2px solid #ccc; padding-bottom: 5px; margin: 40px; }
+              .bar-container { display: flex; align-items: flex-end; justify-content: space-around; height: 280px; border-bottom: 2px solid #ccc; padding-bottom: 5px; margin: 20px 40px; }
               .bar-wrapper { display: flex; flex-direction: column; align-items: center; width: 80px; }
               .bar { width: 100%; border-radius: 4px 4px 0 0; background-color: #38bdf8; display: flex; flex-direction: column; justify-content: flex-start; align-items: center; color: white; font-weight: bold; padding-top: 8px; font-size: 16px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
               .label { margin-top: 10px; font-weight: bold; font-size: 14px; }
@@ -2169,7 +2293,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
               ${logoHtml}
               <h1>Gaziburma Mustafa - Hat Bazında Rapor</h1>
               <p>Oluşturulma Tarihi: <b>${todayStr} ${timeStr}</b></p>
-              <p>Seçilen Tarih Aralığı: <b>${startDateFmt} - ${endDateFmt}</b></p>
+              <p>Seçilen Tarih Aralığı: <b>${dateRangeDisplay}</b></p>
             </div>
             <div class="total">Toplam Arama Sayısı: <b>${total}</b></div>
             <div class="bar-container">
@@ -2183,11 +2307,11 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
                 `;
               }).join('')}
             </div>
+            ${svgChartBlock}
+            ${hatFooterHtml}
           </body>
           </html>
         `;
-
-      } else if (reportType === 'gunlere_gore') {
         const dateMap = {};
         callsData.forEach(c => {
           const d = c.date || 'Bilinmiyor';
@@ -2256,8 +2380,9 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
           <head>
             <meta charset="UTF-8">
             <style>
-              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10px; color: #555; } }
-              body { font-family: Arial, Helvetica, sans-serif; color: #111; }
+              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Calibri, "Segoe UI", Arial, sans-serif; font-size: 10px; color: #555; } }
+              body { font-family: Calibri, "Segoe UI", Arial, sans-serif; color: #111; }
+              * { font-feature-settings: "liga" 0, "clig" 0, "calt" 0; font-variant-ligatures: none; font-variant: normal; }
               .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
               .header h1 { margin: 0; font-size: 20px; }
               .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
@@ -2270,7 +2395,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
               ${logoHtml}
               <h1>Gaziburma Mustafa - Günlere Göre Rapor</h1>
               <p>Oluşturulma Tarihi: <b>${todayStr} ${timeStr}</b></p>
-              <p>Seçilen Tarih Aralığı: <b>${startDateFmt} - ${endDateFmt}</b></p>
+              <p>Seçilen Tarih Aralığı: <b>${dateRangeDisplay}</b></p>
             </div>
             <div class="info-box">
               Seçilen tarih aralığında toplam <b>${totalCalls}</b> arama kaydı bulunmaktadır.
@@ -2278,6 +2403,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
             <h3 style="text-align:center; color:#334155; font-size:15px; margin:0 0 10px 0;">Günlük Arama Sütun Grafiği</h3>
             <div class="chart-container">${columnsHtmlG}</div>
             ${svgChartHtmlG}
+            ${hatFooterHtml}
           </body>
           </html>
         `;
@@ -2377,8 +2503,9 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
           <head>
             <meta charset="UTF-8">
             <style>
-              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10px; color: #555; } }
-              body { font-family: Arial, Helvetica, sans-serif; color: #111; }
+              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Calibri, "Segoe UI", Arial, sans-serif; font-size: 10px; color: #555; } }
+              body { font-family: Calibri, "Segoe UI", Arial, sans-serif; color: #111; }
+              * { font-feature-settings: "liga" 0, "clig" 0, "calt" 0; font-variant-ligatures: none; font-variant: normal; }
               .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
               .header h1 { margin: 0; font-size: 20px; }
               .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
@@ -2391,7 +2518,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
               ${logoHtml}
               <h1>Gaziburma Mustafa - Özel Rapor Grafiği</h1>
               <p>Oluşturulma Tarihi: <b>${todayStr} ${timeStr}</b></p>
-              <p>Seçilen Tarih Aralığı: <b>${startDateFmt} - ${endDateFmt}</b></p>
+              <p>Seçilen Tarih Aralığı: <b>${dateRangeDisplay}</b></p>
             </div>
             <div class="info-box">
               Müşteri: <b>${customerName}</b> &nbsp;&nbsp;|&nbsp;&nbsp; 
@@ -2404,6 +2531,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
               <div class="chart-container">${columnsHtml}</div>
               ${svgChartHtml}
             ` : `<p style="text-align:center;">Bu kriterlere uygun arama bulunamadı.</p>`}
+            ${hatFooterHtml}
           </body>
           </html>
         `;
@@ -2445,8 +2573,8 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
           <head>
             <meta charset="UTF-8">
             <style>
-              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10px; color: #555; } }
-              body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; padding: 0; margin: 0; color: #111; }
+              @page { size: A4 portrait; margin: 15mm 15mm 20mm 15mm; @bottom-right { content: "Sayfa " counter(page) " / " counter(pages); font-family: Calibri, "Segoe UI", Arial, sans-serif; font-size: 10px; color: #555; } }
+              body { font-family: Calibri, "Segoe UI", Arial, sans-serif; font-size: 11px; padding: 0; margin: 0; color: #111; }\n              * { font-feature-settings: "liga" 0, "clig" 0, "calt" 0, "kern" 0; -webkit-font-feature-settings: "liga" 0, "clig" 0, "calt" 0, "kern" 0; font-variant-ligatures: none; font-variant: normal; }
               .header { text-align: center; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
               .header h1 { margin: 0; font-size: 20px; color: #000; }
               .header p { margin: 5px 0 0 0; font-size: 12px; color: #444; }
@@ -2469,7 +2597,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
               ${logoHtml}
               <h1>Gaziburma Mustafa - Sipariş Arama Raporu</h1>
               <p>Oluşturulma Tarihi: <b>${todayStr} ${timeStr}</b></p>
-              <p>Seçilen Tarih Aralığı: <b>${startDateFmt} - ${endDateFmt}</b> &nbsp;&nbsp;|&nbsp;&nbsp; Toplam Kayıt: <b>${callsData.length}</b></p>
+              <p>Seçilen Tarih Aralığı: <b>${dateRangeDisplay}</b> &nbsp;&nbsp;|&nbsp;&nbsp; Toplam Kayıt: <b>${callsData.length}</b></p>
             </div>
             <table>
               <thead>
@@ -2488,7 +2616,7 @@ Remove-Item -Path "${binPath.replace(/\\/g, '\\\\')}" -Force -ErrorAction Silent
               <tfoot>
                 <tr>
                   <td colspan="6" class="footer-cell">
-                    Hat 1: (216) 354 11 82 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 2: (216) 483 27 27 &nbsp;&nbsp;|&nbsp;&nbsp; Hat 3: (216) 354 27 27
+                    Hat 1: <b>${hatNumbers[1] || '-'}</b> &nbsp;&nbsp;|&nbsp;&nbsp; Hat 2: <b>${hatNumbers[2] || '-'}</b> &nbsp;&nbsp;|&nbsp;&nbsp; Hat 3: <b>${hatNumbers[3] || '-'}</b>
                   </td>
                 </tr>
               </tfoot>
